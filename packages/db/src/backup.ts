@@ -3,9 +3,13 @@ import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import postgres from "postgres";
 
+import { resolveBackupPaths } from "./backup-config.js";
+
 const PROJECT_ROOT = resolve(import.meta.dirname, "../../..");
-const BACKUP_DIR = resolve(PROJECT_ROOT, "data/backups");
-const CONFIG_FILE = resolve(PROJECT_ROOT, ".paperclip/config.json");
+const { backupDir: BACKUP_DIR, configFile: CONFIG_FILE } = resolveBackupPaths({
+  projectRoot: PROJECT_ROOT,
+  env: process.env,
+});
 const MAX_AGE_DAYS = 30;
 
 function loadPort(): number {

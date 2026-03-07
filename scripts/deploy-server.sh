@@ -27,7 +27,6 @@ require_command git
 require_command pnpm
 require_command node
 require_command curl
-require_command pg_dump
 require_command sudo
 
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -76,16 +75,23 @@ mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="$BACKUP_DIR/paperclip-$(timestamp).sql"
 
 echo "[1/7] Backing up embedded PostgreSQL to $BACKUP_FILE..."
-PGPASSWORD=paperclip pg_dump \
-  --host=127.0.0.1 \
-  --port="$DB_PORT" \
-  --username=paperclip \
-  --dbname=paperclip \
-  --clean \
-  --if-exists \
-  --file="$BACKUP_FILE"
+if command -v pg_dump >/dev/null 2>&1; then
+  PGPASSWORD=paperclip pg_dump \
+    --host=127.0.0.1 \
+    --port="$DB_PORT" \
+    --username=paperclip \
+    --dbname=paperclip \
+    --clean \
+    --if-exists \
+    --file="$BACKUP_FILE"
 
-find "$BACKUP_DIR" -type f -name 'paperclip-*.sql' -mtime +"$BACKUP_RETENTION_DAYS" -delete 2>/dev/null || true
+  find "$BACKUP_DIR" -type f -name 'paperclip-*.sql' -mtime +"$BACKUP_RETENTION_DAYS" -delete 2>/dev/null || true
+else
+  echo "pg_dump is not installed. Falling back to repository backup helper..."
+  PAPERCLIP_BACKUP_CONFIG_FILE="$CONFIG_FILE" \
+    PAPERCLIP_BACKUP_DIR="$BACKUP_DIR" \
+    pnpm --filter @paperclipai/db exec tsx src/backup.ts
+fi
 
 echo "[2/7] Fetching from origin..."
 git fetch origin
