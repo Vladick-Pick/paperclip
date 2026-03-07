@@ -28,6 +28,24 @@ Before making changes, read in this order:
 - `packages/shared/`: shared types, constants, validators, API path constants
 - `doc/`: operational and product docs
 
+## 3.1 Claricont Fork Operations
+
+This fork has a documented deployment workflow that differs from a plain upstream clone.
+
+Read these before changing remotes, deploy scripts, or production update flow:
+
+1. `doc/operations/fork-workflow.md`
+2. `doc/operations/deploy-runbook.md`
+3. `doc/operations/upstream-sync-runbook.md`
+4. `doc/operations/customizations-register.md`
+
+Operational rules:
+
+- `master` stays a clean mirror of `upstream/master`
+- `claricont-prod` is the only supported production deploy branch
+- production deploy logic lives in `scripts/deploy-server.sh`
+- the server is a deployment target, not a source of truth
+
 ## 4. Dev Setup (Auto DB)
 
 Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
