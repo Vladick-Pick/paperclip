@@ -15,6 +15,7 @@ import {
   type StorageProvider,
 } from "@paperclipai/shared";
 import {
+  resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultSecretsKeyFilePath,
   resolveDefaultStorageDir,
@@ -36,10 +37,15 @@ export interface Config {
   allowedHostnames: string[];
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
+  authDisableSignUp: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   embeddedPostgresDataDir: string;
   embeddedPostgresPort: number;
+  databaseBackupEnabled: boolean;
+  databaseBackupIntervalMinutes: number;
+  databaseBackupRetentionDays: number;
+  databaseBackupDir: string;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -66,6 +72,7 @@ export function loadConfig(): Config {
     fileDatabaseMode === "postgres"
       ? fileConfig?.database.connectionString
       : undefined;
+  const fileDatabaseBackup = fileConfig?.database.backup;
   const fileSecrets = fileConfig?.secrets;
   const fileStorage = fileConfig?.storage;
   const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
@@ -124,15 +131,23 @@ export function loadConfig(): Config {
     AUTH_BASE_URL_MODES.includes(authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       ? (authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       : null;
+  const publicUrlFromEnv = process.env.PAPERCLIP_PUBLIC_URL;
   const authPublicBaseUrlRaw =
     process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
     process.env.BETTER_AUTH_URL ??
+    process.env.BETTER_AUTH_BASE_URL ??
+    publicUrlFromEnv ??
     fileConfig?.auth?.publicBaseUrl;
   const authPublicBaseUrl = authPublicBaseUrlRaw?.trim() || undefined;
   const authBaseUrlMode: AuthBaseUrlMode =
     authBaseUrlModeFromEnv ??
     fileConfig?.auth?.baseUrlMode ??
     (authPublicBaseUrl ? "explicit" : "auto");
+  const disableSignUpFromEnv = process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
+  const authDisableSignUp: boolean =
+    disableSignUpFromEnv !== undefined
+      ? disableSignUpFromEnv === "true"
+      : (fileConfig?.auth?.disableSignUp ?? false);
   const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw
     ? allowedHostnamesFromEnvRaw
@@ -140,14 +155,51 @@ export function loadConfig(): Config {
       .map((value) => value.trim().toLowerCase())
       .filter((value) => value.length > 0)
     : null;
+  const publicUrlHostname = authPublicBaseUrl
+    ? (() => {
+      try {
+        return new URL(authPublicBaseUrl).hostname.trim().toLowerCase();
+      } catch {
+        return null;
+      }
+    })()
+    : null;
   const allowedHostnames = Array.from(
-    new Set((allowedHostnamesFromEnv ?? fileConfig?.server.allowedHostnames ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean)),
+    new Set(
+      [
+        ...(allowedHostnamesFromEnv ?? fileConfig?.server.allowedHostnames ?? []),
+        ...(publicUrlHostname ? [publicUrlHostname] : []),
+      ]
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    ),
   );
   const companyDeletionEnvRaw = process.env.PAPERCLIP_ENABLE_COMPANY_DELETION;
   const companyDeletionEnabled =
     companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
+  const databaseBackupEnabled =
+    process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
+      ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
+      : (fileDatabaseBackup?.enabled ?? true);
+  const databaseBackupIntervalMinutes = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES) ||
+      fileDatabaseBackup?.intervalMinutes ||
+      60,
+  );
+  const databaseBackupRetentionDays = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS) ||
+      fileDatabaseBackup?.retentionDays ||
+      30,
+  );
+  const databaseBackupDir = resolveHomeAwarePath(
+    process.env.PAPERCLIP_DB_BACKUP_DIR ??
+      fileDatabaseBackup?.dir ??
+      resolveDefaultBackupDir(),
+  );
 
   return {
     deploymentMode,
@@ -157,12 +209,17 @@ export function loadConfig(): Config {
     allowedHostnames,
     authBaseUrlMode,
     authPublicBaseUrl,
+    authDisableSignUp,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     embeddedPostgresDataDir: resolveHomeAwarePath(
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
     ),
     embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
+    databaseBackupEnabled,
+    databaseBackupIntervalMinutes,
+    databaseBackupRetentionDays,
+    databaseBackupDir,
     serveUi:
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"

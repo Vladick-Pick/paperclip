@@ -21,6 +21,12 @@ function writeBaseConfig(configPath: string) {
       mode: "embedded-postgres",
       embeddedPostgresDataDir: "/tmp/paperclip-db",
       embeddedPostgresPort: 54329,
+      backup: {
+        enabled: true,
+        intervalMinutes: 60,
+        retentionDays: 30,
+        dir: "/tmp/paperclip-backups",
+      },
     },
     logging: {
       mode: "file",
@@ -36,6 +42,7 @@ function writeBaseConfig(configPath: string) {
     },
     auth: {
       baseUrlMode: "auto",
+      disableSignUp: false,
     },
     storage: {
       provider: "local_disk",
@@ -68,4 +75,3 @@ describe("allowed-hostname command", () => {
     expect(raw.server.allowedHostnames).toEqual(["dotta-macbook-pro"]);
   });
 });
-

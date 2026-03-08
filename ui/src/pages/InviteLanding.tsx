@@ -10,21 +10,19 @@ import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 
 type JoinType = "human" | "agent";
-const joinAdapterOptions: AgentAdapterType[] = [
-  "openclaw",
-  ...AGENT_ADAPTER_TYPES.filter((type): type is Exclude<AgentAdapterType, "openclaw"> => type !== "openclaw"),
-];
+const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude (local)",
   codex_local: "Codex (local)",
-  openclaw: "OpenClaw",
-  cursor: "Cursor",
+  opencode_local: "OpenCode (local)",
+  openclaw_gateway: "OpenClaw Gateway",
+  cursor: "Cursor (local)",
   process: "Process",
   http: "HTTP",
 };
 
-const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local"]);
+const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "opencode_local", "cursor"]);
 
 function dateTime(value: string) {
   return new Date(value).toLocaleString();
@@ -169,6 +167,8 @@ export function InviteLandingPage() {
     const onboardingSkillUrl = readNestedString(payload.onboarding, ["skill", "url"]);
     const onboardingSkillPath = readNestedString(payload.onboarding, ["skill", "path"]);
     const onboardingInstallPath = readNestedString(payload.onboarding, ["skill", "installPath"]);
+    const onboardingTextUrl = readNestedString(payload.onboarding, ["textInstructions", "url"]);
+    const onboardingTextPath = readNestedString(payload.onboarding, ["textInstructions", "path"]);
     const diagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
     return (
       <div className="mx-auto max-w-xl py-10">
@@ -193,6 +193,13 @@ export function InviteLandingPage() {
               {onboardingSkillUrl && <p className="font-mono break-all">GET {onboardingSkillUrl}</p>}
               {!onboardingSkillUrl && onboardingSkillPath && <p className="font-mono break-all">GET {onboardingSkillPath}</p>}
               {onboardingInstallPath && <p className="font-mono break-all">Install to {onboardingInstallPath}</p>}
+            </div>
+          )}
+          {(onboardingTextUrl || onboardingTextPath) && (
+            <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground">Agent-readable onboarding text</p>
+              {onboardingTextUrl && <p className="font-mono break-all">GET {onboardingTextUrl}</p>}
+              {!onboardingTextUrl && onboardingTextPath && <p className="font-mono break-all">GET {onboardingTextPath}</p>}
             </div>
           )}
           {diagnostics.length > 0 && (

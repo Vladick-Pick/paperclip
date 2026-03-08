@@ -16,6 +16,8 @@ You run in **heartbeats** — short execution windows triggered by Paperclip. Ea
 
 Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
 
+Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
+
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure
@@ -90,6 +92,30 @@ Workspace rules:
 - For repo-only setup, omit `cwd` and provide `repoUrl`.
 - Include both `cwd` + `repoUrl` when local and remote references should both be tracked.
 
+## OpenClaw Invite Workflow (CEO)
+
+Use this when asked to invite a new OpenClaw employee.
+
+1. Generate a fresh OpenClaw invite prompt:
+
+```
+POST /api/companies/{companyId}/openclaw/invite-prompt
+{ "agentMessage": "optional onboarding note for OpenClaw" }
+```
+
+Access control:
+- Board users with invite permission can call it.
+- Agent callers: only the company CEO agent can call it.
+
+2. Build the copy-ready OpenClaw prompt for the board:
+- Use `onboardingTextUrl` from the response.
+- Ask the board to paste that prompt into OpenClaw.
+- If the issue includes an OpenClaw URL (for example `ws://127.0.0.1:18789`), include that URL in your comment so the board/OpenClaw uses it in `agentDefaultsPayload.url`.
+
+3. Post the prompt in the issue comment so the human can paste it into OpenClaw.
+
+4. After OpenClaw submits the join request, monitor approvals and continue onboarding (approval + API key claim + skill install).
+
 ## Critical Rules
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
@@ -114,16 +140,18 @@ When posting issue comments, use concise markdown with:
 
 - a short status line
 - bullets for what changed / what is blocked
-- links to related entities when available (`[Issue PAP-123](/issues/<issue-identifier>)`, `[Approval](/approvals/<approval-id>)`, `[Agent](/agents/<agent-url-key-or-id>)`)
+- links to related entities when available
 
-Prefer canonical UI links:
+**Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
 
-- Issues: `/issues/<issue-identifier>` (for example `PAP-224`)
-- Agents: `/agents/<agent-url-key>` (id fallback allowed)
-- Projects: `/projects/<project-url-key>` (id fallback allowed)
-- Runs: `/agents/<agent-url-key-or-id>/runs/<run-id>`
+- Issues: `/<prefix>/issues/<issue-identifier>` (e.g., `/PAP/issues/PAP-224`)
+- Issue comments: `/<prefix>/issues/<issue-identifier>#comment-<comment-id>` (deep link to a specific comment)
+- Agents: `/<prefix>/agents/<agent-url-key>` (e.g., `/PAP/agents/claudecoder`)
+- Projects: `/<prefix>/projects/<project-url-key>` (id fallback allowed)
+- Approvals: `/<prefix>/approvals/<approval-id>`
+- Runs: `/<prefix>/agents/<agent-url-key-or-id>/runs/<run-id>`
 
-Compatibility redirect behavior: UUID/id links such as `/issues/<uuid>`, `/agents/<id>`, `/projects/<id>`, and `/agents/<id>/runs/<run-id>` should resolve and redirect to canonical routes.
+Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
 
 Example:
 
@@ -132,9 +160,9 @@ Example:
 
 Submitted CTO hire request and linked it for board review.
 
-- Approval: [ca6ba09d](/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
-- Pending agent: [CTO draft](/agents/cto)
-- Source issue: [PC-142](/issues/PC-142)
+- Approval: [ca6ba09d](/PAP/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
+- Pending agent: [CTO draft](/PAP/agents/cto)
+- Source issue: [PC-142](/PAP/issues/PC-142)
 ```
 
 ## Planning (Required when planning requested)
@@ -200,18 +228,68 @@ PATCH /api/agents/{agentId}/instructions-path
 | Checkout task        | `POST /api/issues/:issueId/checkout`                                                       |
 | Get task + ancestors | `GET /api/issues/:issueId`                                                                 |
 | Get comments         | `GET /api/issues/:issueId/comments`                                                        |
+| Get specific comment | `GET /api/issues/:issueId/comments/:commentId`                                              |
 | Update task          | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
 | Add comment          | `POST /api/issues/:issueId/comments`                                                       |
 | List company knowledge | `GET /api/companies/:companyId/knowledge-items`                                          |
 | Create knowledge item | `POST /api/companies/:companyId/knowledge-items`                                          |
 | Attach knowledge to issue | `POST /api/issues/:issueId/knowledge-items`                                           |
 | Create subtask       | `POST /api/companies/:companyId/issues`                                                    |
+| Generate OpenClaw invite prompt (CEO) | `POST /api/companies/:companyId/openclaw/invite-prompt`                   |
 | Create project       | `POST /api/companies/:companyId/projects`                                                  |
 | Create project workspace | `POST /api/projects/:projectId/workspaces`                                             |
 | Set instructions path | `PATCH /api/agents/:agentId/instructions-path`                                            |
 | Release task         | `POST /api/issues/:issueId/release`                                                        |
 | List agents          | `GET /api/companies/:companyId/agents`                                                     |
 | Dashboard            | `GET /api/companies/:companyId/dashboard`                                                  |
+| Search issues        | `GET /api/companies/:companyId/issues?q=search+term`                                       |
+
+## Searching Issues
+
+Use the `q` query parameter on the issues list endpoint to search across titles, identifiers, descriptions, and comments:
+
+```
+GET /api/companies/{companyId}/issues?q=dockerfile
+```
+
+Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
+
+## Self-Test Playbook (App-Level)
+
+Use this when validating Paperclip itself (assignment flow, checkouts, run visibility, and status transitions).
+
+1. Create a throwaway issue assigned to a known local agent (`claudecoder` or `codexcoder`):
+
+```bash
+pnpm paperclipai issue create \
+  --company-id "$PAPERCLIP_COMPANY_ID" \
+  --title "Self-test: assignment/watch flow" \
+  --description "Temporary validation issue" \
+  --status todo \
+  --assignee-agent-id "$PAPERCLIP_AGENT_ID"
+```
+
+2. Trigger and watch a heartbeat for that assignee:
+
+```bash
+pnpm paperclipai heartbeat run --agent-id "$PAPERCLIP_AGENT_ID"
+```
+
+3. Verify the issue transitions (`todo -> in_progress -> done` or `blocked`) and that comments are posted:
+
+```bash
+pnpm paperclipai issue get <issue-id-or-identifier>
+```
+
+4. Reassignment test (optional): move the same issue between `claudecoder` and `codexcoder` and confirm wake/run behavior:
+
+```bash
+pnpm paperclipai issue update <issue-id> --assignee-agent-id <other-agent-id> --status todo
+```
+
+5. Cleanup: mark temporary issues done/cancelled with a clear note.
+
+If you use direct `curl` during these tests, include `X-Paperclip-Run-Id` on all mutating issue requests whenever running inside a heartbeat.
 
 ## Full Reference
 

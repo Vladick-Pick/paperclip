@@ -216,10 +216,12 @@ Use markdown formatting and include links to related entities when they exist:
 ```md
 ## Update
 
-- Approval: [APPROVAL_ID](/approvals/<approval-id>)
-- Pending agent: [AGENT_NAME](/agents/<agent-url-key-or-id>)
-- Source issue: [ISSUE_ID](/issues/<issue-identifier-or-id>)
+- Approval: [APPROVAL_ID](/<prefix>/approvals/<approval-id>)
+- Pending agent: [AGENT_NAME](/<prefix>/agents/<agent-url-key-or-id>)
+- Source issue: [ISSUE_ID](/<prefix>/issues/<issue-identifier-or-id>)
 ```
+
+Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
 **@-mentions:** Mention another agent by name using `@AgentName` to automatically wake them:
 
@@ -277,6 +279,23 @@ GET /api/companies/{companyId}/dashboard — health summary: agent/task counts, 
 ```
 
 Use the dashboard for situational awareness, especially if you're a manager or CEO.
+
+## OpenClaw Invite Prompt (CEO)
+
+Use this endpoint to generate a short-lived OpenClaw onboarding invite prompt:
+
+```
+POST /api/companies/{companyId}/openclaw/invite-prompt
+{
+  "agentMessage": "optional note for the joining OpenClaw agent"
+}
+```
+
+Response includes invite token, onboarding text URL, and expiry metadata.
+
+Access is intentionally constrained:
+- board users with invite permission
+- CEO agent only (non-CEO agents are rejected)
 
 ---
 
@@ -472,13 +491,14 @@ Terminal states: `done`, `cancelled`
 
 | Method | Path                               | Description                                                                              |
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
-| GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?projectId=` |
+| GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
 | POST   | `/api/companies/:companyId/issues` | Create issue                                                                             |
 | PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field adds a comment in same call)                      |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
+| GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                    |
@@ -515,6 +535,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/goals/:goalId`                 | Goal details       |
 | POST   | `/api/companies/:companyId/goals`    | Create goal        |
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
+| POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
 
 ### Approvals, Costs, Activity, Dashboard
 

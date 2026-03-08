@@ -30,6 +30,7 @@ const issueServiceStub = {
     return {
       ...issueStub,
       title: String(data.title ?? issueStub.title),
+      status: String(data.status ?? issueStub.status),
       assigneeAgentId: (data.assigneeAgentId as string | null | undefined) ?? null,
       assigneeUserId: (data.assigneeUserId as string | null | undefined) ?? null,
     };
@@ -109,6 +110,7 @@ describe("issue create knowledge routing", () => {
       .post("/companies/cmp-1/issues")
       .send({
         title: "Create with knowledge",
+        status: "todo",
         assigneeAgentId: "22222222-2222-4222-8222-222222222222",
         knowledgeItemIds: [
           "33333333-3333-4333-8333-333333333333",

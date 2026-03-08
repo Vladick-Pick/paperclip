@@ -173,15 +173,22 @@
     {
       "idx": 24,
       "version": "7",
-      "when": 1772899062364,
-      "tag": "0024_peaceful_sauron",
+      "when": 1772806603601,
+      "tag": "0024_far_beast",
       "breakpoints": true
     },
     {
       "idx": 25,
       "version": "7",
-      "when": 1772916701581,
-      "tag": "0025_omniscient_ender_wiggin",
+      "when": 1772807461603,
+      "tag": "0025_nasty_salo",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1772961186584,
+      "tag": "0026_cuddly_luminals",
       "breakpoints": true
     }
   ]

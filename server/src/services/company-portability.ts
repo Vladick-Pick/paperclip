@@ -70,14 +70,26 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
   ],
+  opencode_local: [
+    { path: ["timeoutSec"], value: 0 },
+    { path: ["graceSec"], value: 15 },
+  ],
+  cursor: [
+    { path: ["timeoutSec"], value: 0 },
+    { path: ["graceSec"], value: 15 },
+  ],
   claude_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
     { path: ["maxTurnsPerRun"], value: 80 },
   ],
-  openclaw: [
-    { path: ["method"], value: "POST" },
-    { path: ["timeoutSec"], value: 30 },
+  openclaw_gateway: [
+    { path: ["timeoutSec"], value: 120 },
+    { path: ["waitTimeoutMs"], value: 120000 },
+    { path: ["sessionKeyStrategy"], value: "fixed" },
+    { path: ["sessionKey"], value: "paperclip" },
+    { path: ["role"], value: "operator" },
+    { path: ["scopes"], value: ["operator.admin"] },
   ],
 };
 
@@ -556,7 +568,7 @@ export function companyPortabilityService(db: Db) {
       requiredSecrets: [],
     };
 
-    const allAgentRows = include.agents ? await agents.list(companyId) : [];
+    const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
     const agentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
     if (include.agents) {
       const skipped = allAgentRows.length - agentRows.length;

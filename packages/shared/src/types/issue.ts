@@ -84,6 +84,9 @@ export interface Issue {
   goal?: Goal | null;
   mentionedProjects?: Project[];
   knowledgeItems?: IssueKnowledgeAttachment[];
+  myLastTouchAt?: Date | null;
+  lastExternalCommentAt?: Date | null;
+  isUnreadForMe?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
