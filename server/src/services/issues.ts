@@ -94,6 +94,31 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function findMentionedAgentIds(
+  body: string,
+  agentRows: Array<{ id: string; name: string }>,
+): string[] {
+  if (!body.trim()) return [];
+
+  const seen = new Set<string>();
+  const matches: string[] = [];
+  const rows = [...agentRows].sort((a, b) => b.name.length - a.name.length);
+
+  for (const agent of rows) {
+    const pattern = new RegExp(`(^|[^\\w])@${escapeRegExp(agent.name)}(?=$|[^\\w])`, "i");
+    if (!pattern.test(body)) continue;
+    if (seen.has(agent.id)) continue;
+    seen.add(agent.id);
+    matches.push(agent.id);
+  }
+
+  return matches;
+}
+
 function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
@@ -1211,14 +1236,9 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      return findMentionedAgentIds(body, rows);
     },
 
     findMentionedProjectIds: async (issueId: string) => {
