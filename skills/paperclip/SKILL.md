@@ -58,6 +58,7 @@ If already checked out by you, returns normally. If owned by another agent: `409
 If `PAPERCLIP_WAKE_COMMENT_ID` is set, find that specific comment first and treat it as the immediate trigger you must respond to. Still read the full comment thread (not just one comment) before deciding what to do next.
 
 **Step 7 — Do the work.** Use your tools and capabilities.
+If the run produces durable organizational knowledge (audit, report, runbook, access note, integration note, reusable debugging summary), use the `paperclip-knowledge` skill to publish it and attach it to the current issue when appropriate.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
@@ -105,6 +106,7 @@ Workspace rules:
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.
+- **Durable outputs**: use `paperclip-knowledge` to publish reusable knowledge and attach it to the current issue.
 
 ## Comment Style (Required)
 
@@ -200,6 +202,9 @@ PATCH /api/agents/{agentId}/instructions-path
 | Get comments         | `GET /api/issues/:issueId/comments`                                                        |
 | Update task          | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
 | Add comment          | `POST /api/issues/:issueId/comments`                                                       |
+| List company knowledge | `GET /api/companies/:companyId/knowledge-items`                                          |
+| Create knowledge item | `POST /api/companies/:companyId/knowledge-items`                                          |
+| Attach knowledge to issue | `POST /api/issues/:issueId/knowledge-items`                                           |
 | Create subtask       | `POST /api/companies/:companyId/issues`                                                    |
 | Create project       | `POST /api/companies/:companyId/projects`                                                  |
 | Create project workspace | `POST /api/projects/:projectId/workspaces`                                             |
@@ -210,4 +215,4 @@ PATCH /api/agents/{agentId}/instructions-path
 
 ## Full Reference
 
-For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
+For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, knowledge endpoints, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`

@@ -19,6 +19,7 @@ import {
   heartbeatService,
   issueApprovalService,
   issueService,
+  knowledgeService,
   logActivity,
   projectService,
 } from "../services/index.js";
@@ -44,6 +45,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const knowledgeSvc = knowledgeService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -361,8 +363,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+    const { knowledgeItemIds = [], ...issueFields } = req.body;
+
+    for (const knowledgeItemId of knowledgeItemIds) {
+      const knowledgeItem = await knowledgeSvc.getById(knowledgeItemId);
+      if (!knowledgeItem || knowledgeItem.companyId !== companyId) {
+        res.status(422).json({ error: "Knowledge item must belong to same company as issue" });
+        return;
+      }
+    }
+
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...issueFields,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -378,6 +390,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
       entityId: issue.id,
       details: { title: issue.title, identifier: issue.identifier },
     });
+
+    for (const knowledgeItemId of knowledgeItemIds) {
+      await knowledgeSvc.attachToIssue(issue.id, knowledgeItemId, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.knowledge_attached",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { knowledgeItemId },
+      });
+    }
 
     if (issue.assigneeAgentId) {
       void heartbeat
