@@ -46,6 +46,70 @@ Operational rules:
 - production deploy logic lives in `scripts/deploy-server.sh`
 - the server is a deployment target, not a source of truth
 
+## 3.2 Claricont Open Source Workflow
+
+Claricont works on Paperclip in three distinct modes.
+Keep them separate.
+
+### Mode 1: Fork + Deploy
+
+Use this mode for normal hosting and production operations.
+
+- `origin` is Claricont's fork on GitHub
+- `upstream` is the public `paperclipai/paperclip` repository
+- `master` remains a clean mirror of upstream
+- `claricont-prod` is the only supported deploy branch
+- the server deploys from Claricont's fork, not from upstream directly
+
+Detailed workflow:
+
+1. `doc/operations/fork-workflow.md`
+2. `doc/operations/deploy-runbook.md`
+
+### Mode 2: Internal Customization
+
+Use this mode when Claricont needs fork-only product or operational changes.
+
+- start from `claricont-prod`
+- build the change in a short-lived `codex/*` branch
+- verify locally first
+- merge back into `claricont-prod` only after checks pass
+- deploy only after the integration branch is proven stable
+
+When upstream releases new changes, merge them into Claricont's production line in a controlled way:
+
+- sync `master` from `upstream/master`
+- create an integration branch from `claricont-prod`
+- merge the updated `master`
+- resolve conflicts and run verification before landing the update
+
+Detailed upstream integration procedure:
+
+1. `doc/operations/upstream-sync-runbook.md`
+
+Current Claricont-specific customizations are tracked in:
+
+1. `doc/operations/customizations-register.md`
+
+### Mode 3: Upstream Contribution
+
+Use this mode when a Claricont change looks generally useful for the public Paperclip project.
+
+- extract the smallest clean version of the change from Claricont's fork
+- start the PR branch from clean `master`, not from `claricont-prod`
+- keep Claricont-only deploy or operational code out of the public PR
+- open the PR to `paperclipai/paperclip:master`
+
+This means Claricont can:
+
+- run a change internally first
+- validate it on its own fork and infrastructure
+- then upstream the generalizable part later
+
+Active example:
+
+- `Knowledge` company-memory customization: `doc/operations/knowledge-customization.md`
+
 ## 4. Dev Setup (Auto DB)
 
 Use embedded PGlite in dev by leaving `DATABASE_URL` unset.

@@ -169,6 +169,20 @@
       "when": 1772139727599,
       "tag": "0023_fair_lethal_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1772899062364,
+      "tag": "0024_peaceful_sauron",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1772916701581,
+      "tag": "0025_omniscient_ender_wiggin",
+      "breakpoints": true
     }
   ]
 }
