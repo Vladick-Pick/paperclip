@@ -96,6 +96,18 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+export function shouldSkipIssueScopedWakeForTerminalStatus(input: {
+  issueStatus: string | null | undefined;
+  reason?: string | null;
+  wakeReason?: string | null;
+}) {
+  if (input.issueStatus !== "done" && input.issueStatus !== "cancelled") {
+    return false;
+  }
+  const effectiveReason = readNonEmptyString(input.wakeReason) ?? readNonEmptyString(input.reason);
+  return effectiveReason !== "issue_reopened_via_comment";
+}
+
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -1697,6 +1709,7 @@ export function heartbeatService(db: Db) {
           .select({
             id: issues.id,
             companyId: issues.companyId,
+            status: issues.status,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
           })
@@ -1712,6 +1725,33 @@ export function heartbeatService(db: Db) {
             triggerDetail,
             reason: "issue_execution_issue_not_found",
             payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (
+          shouldSkipIssueScopedWakeForTerminalStatus({
+            issueStatus: issue.status,
+            reason,
+            wakeReason: readNonEmptyString(enrichedContextSnapshot.wakeReason),
+          })
+        ) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_execution_terminal_status",
+            payload: {
+              ...(payload ?? {}),
+              issueId: issue.id,
+              issueStatus: issue.status,
+            },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,

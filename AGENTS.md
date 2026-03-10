@@ -36,8 +36,9 @@ Read these before changing remotes, deploy scripts, or production update flow:
 
 1. `doc/operations/fork-workflow.md`
 2. `doc/operations/deploy-runbook.md`
-3. `doc/operations/upstream-sync-runbook.md`
-4. `doc/operations/customizations-register.md`
+3. `doc/operations/local-instance-restart-runbook.md`
+4. `doc/operations/upstream-sync-runbook.md`
+5. `doc/operations/customizations-register.md`
 
 Operational rules:
 
@@ -51,6 +52,14 @@ Operational rules:
 Claricont works on Paperclip in three distinct modes.
 Keep them separate.
 
+Think in three layers:
+
+1. open source upstream
+2. Claricont's fork and integration branch line
+3. the production server
+
+Change must always flow in that order. The server is where a proven version runs, not where new truth is created.
+
 ### Mode 1: Fork + Deploy
 
 Use this mode for normal hosting and production operations.
@@ -60,6 +69,12 @@ Use this mode for normal hosting and production operations.
 - `master` remains a clean mirror of upstream
 - `claricont-prod` is the only supported deploy branch
 - the server deploys from Claricont's fork, not from upstream directly
+
+Flow:
+
+- open-source updates move from `upstream/master` to `master`
+- approved Claricont production state lives on `claricont-prod`
+- the server only pulls and runs `claricont-prod`
 
 Detailed workflow:
 
@@ -109,6 +124,28 @@ This means Claricont can:
 Active example:
 
 - `Knowledge` company-memory customization: `doc/operations/knowledge-customization.md`
+
+## 3.3 Operational Invariants
+
+These rules are non-negotiable for this repository:
+
+- `master` stays a clean mirror of `upstream/master`
+- `claricont-prod` is the only branch that combines latest upstream plus Claricont additions for production use
+- new upstream changes land through an integration branch from `claricont-prod`, never by merging directly on the server
+- Claricont-only changes start from `claricont-prod`
+- upstream PR branches start from `master`
+- the server must not contain local commits, modified files, staged files, or untracked files that do not exist in GitHub
+- if server-only drift is discovered, stop the deploy flow, recover that work back into git first, then return the server to a clean deploy target
+- authenticated production requires a persistent `BETTER_AUTH_SECRET` or `PAPERCLIP_AGENT_JWT_SECRET` in the service environment; without it the backend fails to start and the UI will surface `Failed to fetch`
+
+When the goal is "latest open source plus our custom system", the default sequence is:
+
+1. sync `master` from `upstream/master`
+2. merge `master` into a short-lived integration branch from `claricont-prod`
+3. resolve conflicts and run `pnpm -r typecheck`, `pnpm test:run`, and `pnpm build`
+4. fast-forward `claricont-prod`
+5. push `claricont-prod`
+6. deploy the server from that branch
 
 ## 4. Dev Setup (Auto DB)
 

@@ -55,4 +55,13 @@ describe("buildPaperclipEnv", () => {
 
     expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3101");
   });
+
+  it("exports AGENT_HOME when the resolved workspace source is agent_home", () => {
+    const env = buildPaperclipEnv(
+      { id: "agent-1", companyId: "company-1" },
+      { workspaceSource: "agent_home", workspaceCwd: "/tmp/agent-home" },
+    );
+
+    expect(env.AGENT_HOME).toBe("/tmp/agent-home");
+  });
 });

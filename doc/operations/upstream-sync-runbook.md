@@ -58,7 +58,35 @@ git merge --ff-only codex/upstream-sync-YYYYMMDD
 git push origin claricont-prod
 ```
 
-Then deploy from `claricont-prod`.
+## Step 5: Deploy The Integrated Version
+
+Before deploy, make sure the server is still only a deploy target:
+
+```sh
+ssh paperclip-vps 'cd ~/paperclip && git status --short --branch && git log --oneline origin/claricont-prod..HEAD'
+```
+
+If the server shows local commits or modified files, stop and recover that drift back into git first.
+
+Then deploy:
+
+```sh
+ssh paperclip-vps
+cd ~
+./update-paperclip.sh
+```
+
+After deploy:
+
+```sh
+ssh paperclip-vps 'curl -fsS http://127.0.0.1:3100/api/health && cd ~/paperclip && git rev-parse --short HEAD && git status --short --branch'
+```
+
+Expected:
+
+- healthcheck returns `status: ok`
+- server HEAD matches the pushed `claricont-prod`
+- server repo is clean
 
 ## When To Open An Upstream PR Instead
 

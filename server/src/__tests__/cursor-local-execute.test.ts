@@ -84,7 +84,20 @@ describe("cursor execute", () => {
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
-        context: {},
+        context: {
+          issueId: "issue-123",
+          taskId: "issue-123",
+          wakeReason: "issue_assigned",
+          paperclipKnowledgeItems: [
+            {
+              id: "knowledge-1",
+              title: "Lead follow-up runbook",
+              kind: "note",
+              summary: "Use the retry flow for missed calls.",
+              body: "Retry missed calls within 15 minutes and tag the outcome.",
+            },
+          ],
+        },
         authToken: "run-jwt-token",
         onLog: async () => {},
         onMeta: async (meta) => {
@@ -110,8 +123,15 @@ describe("cursor execute", () => {
       );
       expect(capture.prompt).toContain("Paperclip runtime note:");
       expect(capture.prompt).toContain("PAPERCLIP_API_KEY");
+      expect(capture.prompt).toContain("Paperclip task context:");
+      expect(capture.prompt).toContain("wakeReason: issue_assigned");
+      expect(capture.prompt).toContain("issueId: issue-123");
+      expect(capture.prompt).toContain("Attached issue knowledge:");
+      expect(capture.prompt).toContain("Lead follow-up runbook");
+      expect(capture.prompt).toContain("Retry missed calls within 15 minutes");
       expect(invocationPrompt).toContain("Paperclip runtime note:");
       expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
+      expect(invocationPrompt).toContain("Attached issue knowledge:");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;

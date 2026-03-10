@@ -2,6 +2,10 @@
 
 This runbook describes the only supported production deploy path for Claricont's Paperclip server.
 
+If the source tree is already correct and you only need the service to reload it, use [local-instance-restart-runbook.md](./local-instance-restart-runbook.md) instead of running a full deploy.
+
+If the source tree is already correct and you only need the service to reload it, use [local-instance-restart-runbook.md](./local-instance-restart-runbook.md) instead of running a full deploy.
+
 ## Server Facts
 
 - host alias: `paperclip-vps`
@@ -43,19 +47,39 @@ What the wrapper does:
 
 - `claricont-prod` has been pushed to `origin`
 - local verification already passed
-- there are no intentional uncommitted changes on the server
+- the server repo is still on branch `claricont-prod`
+- the server repo is not ahead of `origin/claricont-prod`
+- there are no modified, staged, or untracked files on the server
+- authenticated production still has a persistent `BETTER_AUTH_SECRET` or `PAPERCLIP_AGENT_JWT_SECRET`
+
+Quick server cleanliness check:
+
+```sh
+ssh paperclip-vps 'cd ~/paperclip && git status --short --branch && git log --oneline origin/claricont-prod..HEAD'
+```
+
+Expected:
+
+- branch is `claricont-prod`
+- no local commits beyond `origin/claricont-prod`
+- no modified or untracked files
+
+If the server is dirty or ahead of origin, stop. Recover that work back into git first. Do not continue the deploy until the server is back to being a clean target.
 
 ## Post-Deploy Checks
 
 ```sh
 systemctl is-active paperclip
 curl -fsS http://127.0.0.1:3100/api/health
+ssh paperclip-vps 'cd ~/paperclip && git rev-parse --short HEAD && git status --short --branch'
 ```
 
 Expected:
 
 - service state is `active`
 - healthcheck returns `status: ok`
+- server HEAD matches the pushed `origin/claricont-prod` commit
+- repo remains clean after deploy
 
 ## Rollback
 
@@ -72,5 +96,6 @@ If data recovery is needed, restore from the most recent SQL backup in:
 ## What Not To Do
 
 - do not edit code directly under `/home/paperclip/paperclip` and leave it uncommitted
+- do not create local commits on the server as a substitute for git branches in the fork
 - do not deploy from `master`
 - do not point the server back to the official repo as `origin`

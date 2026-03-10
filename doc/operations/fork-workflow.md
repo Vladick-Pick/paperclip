@@ -21,6 +21,22 @@ Use this workflow exactly.
 - `claricont-prod`: Claricont's stable deployment branch
 - `codex/*`: short-lived implementation and ops branches
 
+## Practical Model
+
+There are three separate places in this workflow:
+
+1. open source (`upstream/master`)
+2. Claricont's integrated version (`claricont-prod`)
+3. the production server
+
+Always move changes through them in that order.
+
+- Open-source updates: `upstream/master -> master -> codex/upstream-sync-* -> claricont-prod -> server`
+- Claricont-only work: `claricont-prod -> codex/* -> claricont-prod -> server`
+- Upstream contribution work: `master -> codex/* -> upstream PR`
+
+The production server is never the source of truth. It only runs a version that already exists in GitHub.
+
 ## Rules
 
 1. Do not ship from `master`.
@@ -30,6 +46,9 @@ Use this workflow exactly.
 5. Deploy only from `claricont-prod`.
 6. Start internal changes from `claricont-prod`.
 7. Start upstream candidate changes from `master`.
+8. Do not allow server-only drift. The server repo must stay clean and must not get ahead of `origin/claricont-prod`.
+9. If server-only drift is discovered, recover it back into git before the next deploy.
+10. Keep authenticated production secrets persistent outside the repo so the service can restart cleanly.
 
 ## Internal Change Flow
 

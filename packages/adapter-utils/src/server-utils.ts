@@ -103,7 +103,125 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
   return redacted;
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+function truncatePromptValue(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}...(truncated)`;
+}
+
+function nonEmptyPromptString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function stringifyPromptArray(values: unknown): string | null {
+  if (!Array.isArray(values)) return null;
+  const items = values
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items.join(", ") : null;
+}
+
+export function renderPaperclipRuntimePreamble(input: {
+  env: Record<string, string>;
+  context: Record<string, unknown>;
+}): string {
+  const { env, context } = input;
+  const lines: string[] = [];
+  const paperclipKeys = Object.keys(env)
+    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .sort();
+
+  if (paperclipKeys.length > 0) {
+    lines.push("Paperclip runtime note:");
+    lines.push(
+      `The following PAPERCLIP_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
+    );
+    lines.push("Do not assume these variables are missing without checking your shell environment.");
+    lines.push("");
+  }
+
+  const wakeReason = nonEmptyPromptString(context.wakeReason);
+  const taskId = nonEmptyPromptString(context.taskId);
+  const issueId = nonEmptyPromptString(context.issueId);
+  const wakeCommentId =
+    nonEmptyPromptString(context.wakeCommentId) ??
+    nonEmptyPromptString(context.commentId);
+  const approvalId = nonEmptyPromptString(context.approvalId);
+  const approvalStatus = nonEmptyPromptString(context.approvalStatus);
+  const linkedIssueIds = stringifyPromptArray(context.issueIds);
+  const workspace = parseObject(context.paperclipWorkspace);
+  const workspaceCwd = nonEmptyPromptString(workspace.cwd);
+  const workspaceSource = nonEmptyPromptString(workspace.source);
+  const workspaceRepoUrl = nonEmptyPromptString(workspace.repoUrl);
+  const workspaceRepoRef = nonEmptyPromptString(workspace.repoRef);
+
+  const runtimeFacts: string[] = [];
+  if (wakeReason) runtimeFacts.push(`wakeReason: ${wakeReason}`);
+  if (taskId) runtimeFacts.push(`taskId: ${taskId}`);
+  if (issueId) runtimeFacts.push(`issueId: ${issueId}`);
+  if (wakeCommentId) runtimeFacts.push(`wakeCommentId: ${wakeCommentId}`);
+  if (approvalId) runtimeFacts.push(`approvalId: ${approvalId}`);
+  if (approvalStatus) runtimeFacts.push(`approvalStatus: ${approvalStatus}`);
+  if (linkedIssueIds) runtimeFacts.push(`linkedIssueIds: ${linkedIssueIds}`);
+  if (workspaceCwd) runtimeFacts.push(`workspace.cwd: ${workspaceCwd}`);
+  if (workspaceSource) runtimeFacts.push(`workspace.source: ${workspaceSource}`);
+  if (workspaceRepoUrl) runtimeFacts.push(`workspace.repoUrl: ${workspaceRepoUrl}`);
+  if (workspaceRepoRef) runtimeFacts.push(`workspace.repoRef: ${workspaceRepoRef}`);
+
+  if (runtimeFacts.length > 0) {
+    lines.push("Paperclip task context:");
+    for (const fact of runtimeFacts) {
+      lines.push(`- ${fact}`);
+    }
+    lines.push("");
+  }
+
+  const knowledgeItems = Array.isArray(context.paperclipKnowledgeItems)
+    ? context.paperclipKnowledgeItems.filter(
+        (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      )
+    : [];
+
+  if (knowledgeItems.length > 0) {
+    lines.push("Attached issue knowledge:");
+    lines.push("Use this material as task context even if the agent prompt template does not reference `{{context.*}}`.");
+    lines.push("");
+
+    knowledgeItems.forEach((item, index) => {
+      const title = nonEmptyPromptString(item.title) ?? `Knowledge item ${index + 1}`;
+      const kind = nonEmptyPromptString(item.kind);
+      const summary = nonEmptyPromptString(item.summary);
+      const body = nonEmptyPromptString(item.body);
+      const sourceUrl = nonEmptyPromptString(item.sourceUrl);
+      const contentText = nonEmptyPromptString(item.contentText);
+      const asset = parseObject(item.asset);
+      const assetName = nonEmptyPromptString(asset.originalFilename);
+      const assetType = nonEmptyPromptString(asset.contentType);
+      const primaryContent = body ?? contentText;
+
+      lines.push(`${index + 1}. ${title}${kind ? ` (${kind})` : ""}`);
+      if (summary) lines.push(`Summary: ${truncatePromptValue(summary, 1200)}`);
+      if (sourceUrl) lines.push(`Source URL: ${sourceUrl}`);
+      if (assetName || assetType) {
+        lines.push(`Asset: ${[assetName, assetType].filter(Boolean).join(" | ")}`);
+      }
+      if (primaryContent) {
+        lines.push("Content:");
+        lines.push(truncatePromptValue(primaryContent, 6000));
+      }
+      lines.push("");
+    });
+  }
+
+  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+}
+
+export function buildPaperclipEnv(
+  agent: { id: string; companyId: string },
+  opts?: { workspaceCwd?: string | null; workspaceSource?: string | null },
+): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -120,6 +238,11 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
   const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+  const workspaceSource = opts?.workspaceSource?.trim();
+  const workspaceCwd = opts?.workspaceCwd?.trim();
+  if (workspaceSource === "agent_home" && workspaceCwd) {
+    vars.AGENT_HOME = path.resolve(workspaceCwd);
+  }
   return vars;
 }
 
