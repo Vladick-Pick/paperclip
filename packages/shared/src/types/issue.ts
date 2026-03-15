@@ -75,6 +75,7 @@ export interface Issue {
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   startedAt: Date | null;
+  parkedUntilAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;
   hiddenAt: Date | null;

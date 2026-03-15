@@ -21,6 +21,7 @@ const issueBaseSchema = z.object({
   requestDepth: z.number().int().nonnegative().optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  parkedUntilAt: z.string().datetime().optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 

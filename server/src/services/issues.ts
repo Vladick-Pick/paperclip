@@ -37,6 +37,9 @@ function applyStatusSideEffects(
   if (status === "in_progress" && !patch.startedAt) {
     patch.startedAt = new Date();
   }
+  if (status !== "in_progress" && patch.parkedUntilAt === undefined) {
+    patch.parkedUntilAt = null;
+  }
   if (status === "done") {
     patch.completedAt = new Date();
   }
@@ -44,6 +47,19 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+export function normalizeAssignedIssueStatus(input: {
+  status?: string | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+}, fallbackStatus: string = "backlog") {
+  const nextStatus = input.status ?? fallbackStatus;
+  const hasAssignee = Boolean(input.assigneeAgentId || input.assigneeUserId);
+  if (hasAssignee && nextStatus === "backlog") {
+    return "todo";
+  }
+  return nextStatus;
 }
 
 export interface IssueFilters {
@@ -56,6 +72,13 @@ export interface IssueFilters {
   labelId?: string;
   q?: string;
 }
+
+type StaleIssueInput = {
+  status?: string | null;
+  startedAt: Date | string | null;
+  parkedUntilAt?: Date | string | null;
+  hiddenAt?: Date | string | null;
+};
 
 type IssueRow = typeof issues.$inferSelect;
 type IssueLabelRow = typeof labels.$inferSelect;
@@ -96,6 +119,32 @@ function escapeLikePattern(value: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function asDate(value: Date | string | null | undefined): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function isIssueStale(
+  issue: StaleIssueInput,
+  options?: { now?: Date; minutes?: number },
+): boolean {
+  const now = options?.now ?? new Date();
+  const minutes = options?.minutes ?? 60;
+  if (issue.status && issue.status !== "in_progress") return false;
+  if (asDate(issue.hiddenAt)) return false;
+
+  const startedAt = asDate(issue.startedAt);
+  if (!startedAt) return false;
+
+  const parkedUntilAt = asDate(issue.parkedUntilAt);
+  if (parkedUntilAt && parkedUntilAt > now) return false;
+
+  const cutoff = new Date(now.getTime() - minutes * 60 * 1000);
+  return startedAt < cutoff;
 }
 
 export function findMentionedAgentIds(
@@ -647,6 +696,7 @@ export function issueService(db: Db) {
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
     ) => {
       const { labelIds: inputLabelIds, ...issueData } = data;
+      issueData.status = normalizeAssignedIssueStatus(issueData);
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -712,6 +762,18 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const normalizedStatus = normalizeAssignedIssueStatus(
+        {
+          status: issueData.status,
+          assigneeAgentId: nextAssigneeAgentId,
+          assigneeUserId: nextAssigneeUserId,
+        },
+        existing.status,
+      );
+
+      if (normalizedStatus !== existing.status || issueData.status !== undefined) {
+        patch.status = normalizedStatus;
+      }
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -811,6 +873,7 @@ export function issueService(db: Db) {
           executionRunId: checkoutRunId,
           status: "in_progress",
           startedAt: now,
+          parkedUntilAt: null,
           updatedAt: now,
         })
         .where(
@@ -855,6 +918,7 @@ export function issueService(db: Db) {
           .set({
             checkoutRunId,
             executionRunId: checkoutRunId,
+            parkedUntilAt: null,
             updatedAt: new Date(),
           })
           .where(
@@ -1407,22 +1471,22 @@ export function issueService(db: Db) {
       }));
     },
 
-    staleCount: async (companyId: string, minutes = 60) => {
-      const cutoff = new Date(Date.now() - minutes * 60 * 1000);
-      const result = await db
-        .select({ count: sql<number>`count(*)` })
+    staleCount: async (companyId: string, minutes = 60, now = new Date()) => {
+      const rows = await db
+        .select({
+          startedAt: issues.startedAt,
+          parkedUntilAt: issues.parkedUntilAt,
+        })
         .from(issues)
         .where(
           and(
             eq(issues.companyId, companyId),
             eq(issues.status, "in_progress"),
             isNull(issues.hiddenAt),
-            sql`${issues.startedAt} < ${cutoff.toISOString()}`,
           ),
-        )
-        .then((rows) => rows[0]);
+        );
 
-      return Number(result?.count ?? 0);
+      return rows.filter((issue) => isIssueStale(issue, { now, minutes })).length;
     },
   };
 }

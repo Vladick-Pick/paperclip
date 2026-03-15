@@ -36,6 +36,8 @@ const ALLOWED_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/webp",
   "image/gif",
 ]);
+const REENGAGEMENT_SOURCE_STATUSES = new Set(["done", "blocked", "cancelled"]);
+const REENGAGEMENT_TARGET_STATUSES = new Set(["todo", "in_progress"]);
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -423,7 +425,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
-    const { knowledgeItemIds = [], ...issueFields } = req.body;
+    const { knowledgeItemIds = [], parkedUntilAt: parkedUntilAtRaw, ...issueFields } = req.body;
+    if (parkedUntilAtRaw !== undefined) {
+      issueFields.parkedUntilAt = parkedUntilAtRaw ? new Date(parkedUntilAtRaw) : null;
+    }
 
     for (const knowledgeItemId of knowledgeItemIds) {
       const knowledgeItem = await knowledgeSvc.getById(knowledgeItemId);
@@ -515,9 +520,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
-    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
+    const {
+      comment: commentBody,
+      hiddenAt: hiddenAtRaw,
+      parkedUntilAt: parkedUntilAtRaw,
+      ...updateFields
+    } = req.body;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (parkedUntilAtRaw !== undefined) {
+      updateFields.parkedUntilAt = parkedUntilAtRaw ? new Date(parkedUntilAtRaw) : null;
     }
     let issue;
     try {
@@ -610,6 +623,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
       req.body.status !== undefined;
+    const statusChangedToReengage =
+      !assigneeChanged &&
+      existing.assigneeAgentId === issue.assigneeAgentId &&
+      issue.assigneeAgentId !== null &&
+      existing.status !== issue.status &&
+      req.body.status !== undefined &&
+      REENGAGEMENT_SOURCE_STATUSES.has(existing.status) &&
+      REENGAGEMENT_TARGET_STATUSES.has(issue.status);
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -628,6 +649,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
 
       if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
+        wakeups.set(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_status_changed",
+          payload: { issueId: issue.id, mutation: "update" },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: { issueId: issue.id, source: "issue.status_change" },
+        });
+      }
+
+      if (statusChangedToReengage && issue.assigneeAgentId) {
         wakeups.set(issue.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",

@@ -190,6 +190,13 @@
       "when": 1772961186584,
       "tag": "0026_cuddly_luminals",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1773407049518,
+      "tag": "0027_plain_freak",
+      "breakpoints": true
     }
   ]
 }

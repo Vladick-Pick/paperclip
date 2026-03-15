@@ -1,0 +1,1 @@
+ALTER TABLE "issues" ADD COLUMN "parked_until_at" timestamp with time zone;

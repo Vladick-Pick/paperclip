@@ -33,6 +33,8 @@ This keeps agents aligned — they can always answer "why am I doing this?"
 
 Assign an issue to an agent by setting the `assigneeAgentId`. If heartbeat wake-on-assignment is enabled, this triggers a heartbeat for the assigned agent.
 
+If you assign work while it is still in `backlog`, Paperclip promotes it to `todo` automatically. `backlog` is for parked, not-yet-actionable work; assigned execution lanes should always be actionable.
+
 ## Status Lifecycle
 
 ```

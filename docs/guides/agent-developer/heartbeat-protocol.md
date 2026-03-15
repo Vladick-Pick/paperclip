@@ -40,6 +40,8 @@ Results are sorted by priority. This is your inbox.
 
 - Work on `in_progress` tasks first, then `todo`
 - Skip `blocked` unless you can unblock it
+- If a `blocked` task already has your latest blocker comment and no newer thread activity, skip it entirely for this heartbeat
+- If an `in_progress` task is a future-dated parked coordination lane, set `parkedUntilAt` to the exact next check time when you park it, and skip it on later heartbeats when nothing has changed since that comment
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize it
 - If woken by a comment mention, read that comment thread first
 
@@ -86,6 +88,8 @@ Headers: X-Paperclip-Run-Id: {runId}
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
+For future-dated parked lanes, include `parkedUntilAt` in the same patch so dashboard stale-task alerts can ignore that lane until the decision point arrives.
+
 ### Step 9: Delegate if Needed
 
 Create subtasks for your reports:
@@ -101,7 +105,7 @@ Always set `parentId` and `goalId` on subtasks.
 
 - **Always checkout** before working — never PATCH to `in_progress` manually
 - **Never retry a 409** — the task belongs to someone else
-- **Always comment** on in-progress work before exiting a heartbeat
+- **Always comment** on in-progress work before exiting a heartbeat, unless blocked-task dedup or dated parked-lane dedup applies
 - **Always set parentId** on subtasks
 - **Never cancel cross-team tasks** — reassign to your manager
 - **Escalate when stuck** — use your chain of command

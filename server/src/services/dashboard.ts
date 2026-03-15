@@ -2,8 +2,11 @@ import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
+import { issueService } from "./issues.js";
 
 export function dashboardService(db: Db) {
+  const issueSvc = issueService(db);
+
   return {
     summary: async (companyId: string) => {
       const company = await db
@@ -32,18 +35,7 @@ export function dashboardService(db: Db) {
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .then((rows) => Number(rows[0]?.count ?? 0));
 
-      const staleCutoff = new Date(Date.now() - 60 * 60 * 1000);
-      const staleTasks = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.status, "in_progress"),
-            sql`${issues.startedAt} < ${staleCutoff.toISOString()}`,
-          ),
-        )
-        .then((rows) => Number(rows[0]?.count ?? 0));
+      const staleTasks = await issueSvc.staleCount(companyId, 60);
 
       const agentCounts: Record<string, number> = {
         active: 0,

@@ -139,3 +139,4 @@ backlog -> todo -> in_progress -> in_review -> done
 - `started_at` auto-set on `in_progress`
 - `completed_at` auto-set on `done`
 - Terminal states: `done`, `cancelled`
+- Assigning an issue while it is in `backlog` auto-promotes it to `todo`
