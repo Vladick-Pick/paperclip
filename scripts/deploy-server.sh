@@ -114,13 +114,19 @@ else
   fi
 fi
 
-echo "[5/7] Building UI..."
+echo "[5/9] Building plugin SDK..."
+CI=1 pnpm --filter @paperclipai/plugin-sdk build
+
+echo "[6/9] Applying database migrations..."
+CI=1 pnpm --filter @paperclipai/db migrate
+
+echo "[7/9] Building UI..."
 CI=1 pnpm --filter @paperclipai/ui build
 
-echo "[6/7] Restarting service..."
+echo "[8/9] Restarting service..."
 sudo -n systemctl restart "$SERVICE_NAME"
 
-echo "[7/7] Waiting for healthcheck..."
+echo "[9/9] Waiting for healthcheck..."
 for _ in {1..30}; do
   if curl -fsS "http://127.0.0.1:${SERVER_PORT}/api/health" >/dev/null; then
     echo "Healthcheck passed."

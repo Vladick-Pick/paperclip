@@ -39,9 +39,11 @@ What the wrapper does:
 3. backs up the embedded database
 4. fetches and fast-forwards `claricont-prod`
 5. installs dependencies
-6. builds the UI
-7. restarts `paperclip`
-8. waits for healthcheck success
+6. builds `@paperclipai/plugin-sdk`
+7. applies pending database migrations
+8. builds the UI
+9. restarts `paperclip`
+10. waits for healthcheck success
 
 ## Pre-Deploy Checklist
 
