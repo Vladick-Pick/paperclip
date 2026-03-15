@@ -36,7 +36,6 @@ export function dashboardService(db: Db) {
         .then((rows) => Number(rows[0]?.count ?? 0));
 
       const staleTasks = await issueSvc.staleCount(companyId, 60);
-
       const agentCounts: Record<string, number> = {
         active: 0,
         running: 0,

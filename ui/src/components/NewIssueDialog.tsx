@@ -1,17 +1,8 @@
-import {
-  useState,
-  useEffect,
-  useRef,
-  useCallback,
-  useMemo,
-  type ChangeEvent,
-} from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
-import { useToast } from "../context/ToastContext";
 import { issuesApi } from "../api/issues";
-import { knowledgeApi } from "../api/knowledge";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -19,11 +10,15 @@ import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { useToast } from "../context/ToastContext";
+import {
+  assigneeValueFromSelection,
+  currentUserAssigneeOption,
+  parseAssigneeValue,
+} from "../lib/assignees";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,30 +37,24 @@ import {
   ArrowUp,
   ArrowDown,
   AlertTriangle,
-  BookOpen,
   Tag,
   Calendar,
   Paperclip,
+  FileText,
+  Loader2,
   X,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
-import {
-  issueStatusText,
-  issueStatusTextDefault,
-  priorityColor,
-  priorityColorDefault,
-} from "../lib/status-colors";
+import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
-import {
-  InlineEntitySelector,
-  type InlineEntityOption,
-} from "./InlineEntitySelector";
-import { KnowledgeAttachDialog } from "./KnowledgeAttachDialog";
+import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
+// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
+const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
 
 /** Return black or white hex based on background luminance (WCAG perceptual weights). */
 function getContrastTextColor(hexColor: string): string {
@@ -82,16 +71,25 @@ interface IssueDraft {
   description: string;
   status: string;
   priority: string;
-  assigneeId: string;
+  assigneeValue: string;
+  assigneeId?: string;
   projectId: string;
   assigneeModelOverride: string;
   assigneeThinkingEffort: string;
   assigneeChrome: boolean;
-  assigneeUseProjectWorkspace: boolean;
-  knowledgeItemIds: string[];
+  useIsolatedExecutionWorkspace: boolean;
 }
 
+type StagedIssueFile = {
+  id: string;
+  file: File;
+  kind: "document" | "attachment";
+  documentKey?: string;
+  title?: string | null;
+};
+
 const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
+const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
@@ -122,7 +120,6 @@ function buildAssigneeAdapterOverrides(input: {
   modelOverride: string;
   thinkingEffortOverride: string;
   chrome: boolean;
-  useProjectWorkspace: boolean;
 }): Record<string, unknown> | null {
   const adapterType = input.adapterType ?? null;
   if (!adapterType || !ISSUE_OVERRIDE_ADAPTER_TYPES.has(adapterType)) {
@@ -150,9 +147,6 @@ function buildAssigneeAdapterOverrides(input: {
   if (Object.keys(adapterConfig).length > 0) {
     overrides.adapterConfig = adapterConfig;
   }
-  if (!input.useProjectWorkspace) {
-    overrides.useProjectWorkspace = false;
-  }
   return Object.keys(overrides).length > 0 ? overrides : null;
 }
 
@@ -174,59 +168,72 @@ function clearDraft() {
   localStorage.removeItem(DRAFT_KEY);
 }
 
+function isTextDocumentFile(file: File) {
+  const name = file.name.toLowerCase();
+  return (
+    name.endsWith(".md") ||
+    name.endsWith(".markdown") ||
+    name.endsWith(".txt") ||
+    file.type === "text/markdown" ||
+    file.type === "text/plain"
+  );
+}
+
+function fileBaseName(filename: string) {
+  return filename.replace(/\.[^.]+$/, "");
+}
+
+function slugifyDocumentKey(input: string) {
+  const slug = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "document";
+}
+
+function titleizeFilename(input: string) {
+  return input
+    .split(/[-_ ]+/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function createUniqueDocumentKey(baseKey: string, stagedFiles: StagedIssueFile[]) {
+  const existingKeys = new Set(
+    stagedFiles
+      .filter((file) => file.kind === "document")
+      .map((file) => file.documentKey)
+      .filter((key): key is string => Boolean(key)),
+  );
+  if (!existingKeys.has(baseKey)) return baseKey;
+  let suffix = 2;
+  while (existingKeys.has(`${baseKey}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseKey}-${suffix}`;
+}
+
+function formatFileSize(file: File) {
+  if (file.size < 1024) return `${file.size} B`;
+  if (file.size < 1024 * 1024) return `${(file.size / 1024).toFixed(1)} KB`;
+  return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 const statuses = [
-  {
-    value: "backlog",
-    label: "Backlog",
-    color: issueStatusText.backlog ?? issueStatusTextDefault,
-  },
-  {
-    value: "todo",
-    label: "Todo",
-    color: issueStatusText.todo ?? issueStatusTextDefault,
-  },
-  {
-    value: "in_progress",
-    label: "In Progress",
-    color: issueStatusText.in_progress ?? issueStatusTextDefault,
-  },
-  {
-    value: "in_review",
-    label: "In Review",
-    color: issueStatusText.in_review ?? issueStatusTextDefault,
-  },
-  {
-    value: "done",
-    label: "Done",
-    color: issueStatusText.done ?? issueStatusTextDefault,
-  },
+  { value: "backlog", label: "Backlog", color: issueStatusText.backlog ?? issueStatusTextDefault },
+  { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
+  { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
+  { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
+  { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
 ];
 
 const priorities = [
-  {
-    value: "critical",
-    label: "Critical",
-    icon: AlertTriangle,
-    color: priorityColor.critical ?? priorityColorDefault,
-  },
-  {
-    value: "high",
-    label: "High",
-    icon: ArrowUp,
-    color: priorityColor.high ?? priorityColorDefault,
-  },
-  {
-    value: "medium",
-    label: "Medium",
-    icon: Minus,
-    color: priorityColor.medium ?? priorityColorDefault,
-  },
-  {
-    value: "low",
-    label: "Low",
-    icon: ArrowDown,
-    color: priorityColor.low ?? priorityColorDefault,
-  },
+  { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
+  { value: "high", label: "High", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
+  { value: "medium", label: "Medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
+  { value: "low", label: "Low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
 ];
 
 export function NewIssueDialog() {
@@ -238,23 +245,22 @@ export function NewIssueDialog() {
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
-  const [assigneeId, setAssigneeId] = useState("");
+  const [assigneeValue, setAssigneeValue] = useState("");
   const [projectId, setProjectId] = useState("");
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
-  const [assigneeUseProjectWorkspace, setAssigneeUseProjectWorkspace] =
-    useState(true);
-  const [draftKnowledgeIds, setDraftKnowledgeIds] = useState<string[]>([]);
-  const [draftKnowledgeOpen, setDraftKnowledgeOpen] = useState(false);
+  const [useIsolatedExecutionWorkspace, setUseIsolatedExecutionWorkspace] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
+  const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
-  const dialogCompany =
-    companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
+  const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
 
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
@@ -262,7 +268,7 @@ export function NewIssueDialog() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
-  const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const stageFileInputRef = useRef<HTMLInputElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
 
@@ -277,11 +283,6 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
-  const { data: companyKnowledge } = useQuery({
-    queryKey: queryKeys.knowledge.list(effectiveCompanyId!),
-    queryFn: () => knowledgeApi.list(effectiveCompanyId!),
-    enabled: !!effectiveCompanyId && newIssueOpen,
-  });
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -293,11 +294,13 @@ export function NewIssueDialog() {
     userId: currentUserId,
   });
 
-  const assigneeAdapterType =
-    (agents ?? []).find((agent) => agent.id === assigneeId)?.adapterType ??
-    null;
+  const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [assigneeValue]);
+  const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
+  const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
+
+  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null;
   const supportsAssigneeOverrides = Boolean(
-    assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType)
+    assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
   const mentionOptions = useMemo<MentionOption[]>(() => {
     const options: MentionOption[] = [];
@@ -335,45 +338,50 @@ export function NewIssueDialog() {
   const createIssue = useMutation({
     mutationFn: async ({
       companyId,
-      knowledgeItemIds,
+      stagedFiles: pendingStagedFiles,
       ...data
-    }: { companyId: string; knowledgeItemIds: string[] } & Record<
-      string,
-      unknown
-    >) => {
-      const issue = await issuesApi.create(companyId, {
-        ...data,
-        knowledgeItemIds,
-      });
-      return {
-        issue,
-        attachedCount: knowledgeItemIds.length,
-      };
+    }: { companyId: string; stagedFiles: StagedIssueFile[] } & Record<string, unknown>) => {
+      const issue = await issuesApi.create(companyId, data);
+      const failures: string[] = [];
+
+      for (const stagedFile of pendingStagedFiles) {
+        try {
+          if (stagedFile.kind === "document") {
+            const body = await stagedFile.file.text();
+            await issuesApi.upsertDocument(issue.id, stagedFile.documentKey ?? "document", {
+              title: stagedFile.documentKey === "plan" ? null : stagedFile.title ?? null,
+              format: "markdown",
+              body,
+              baseRevisionId: null,
+            });
+          } else {
+            await issuesApi.uploadAttachment(companyId, issue.id, stagedFile.file);
+          }
+        } catch {
+          failures.push(stagedFile.file.name);
+        }
+      }
+
+      return { issue, companyId, failures };
     },
-    onSuccess: ({ issue, attachedCount }) => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.issues.list(effectiveCompanyId!),
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.issues.knowledge(issue.id),
-      });
+    onSuccess: ({ issue, companyId, failures }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      if (failures.length > 0) {
+        const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
+        const issueRef = issue.identifier ?? issue.id;
+        pushToast({
+          title: `Created ${issueRef} with upload warnings`,
+          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
+          tone: "warn",
+          action: prefix
+            ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+            : undefined,
+        });
+      }
       clearDraft();
       reset();
       closeNewIssue();
-      pushToast({
-        dedupeKey: `activity:issue.created:${issue.id}`,
-        title: `${issue.identifier ?? "Issue"} created`,
-        body:
-          attachedCount > 0
-            ? `${issue.title} · ${attachedCount} knowledge attached`
-            : issue.title,
-        tone: "success",
-        action: {
-          label: `View ${issue.identifier ?? "issue"}`,
-          href: `/issues/${issue.identifier ?? issue.id}`,
-        },
-      });
     },
   });
 
@@ -385,12 +393,15 @@ export function NewIssueDialog() {
   });
 
   // Debounced draft saving
-  const scheduleSave = useCallback((draft: IssueDraft) => {
-    if (draftTimer.current) clearTimeout(draftTimer.current);
-    draftTimer.current = setTimeout(() => {
-      if (draft.title.trim()) saveDraft(draft);
-    }, DEBOUNCE_MS);
-  }, []);
+  const scheduleSave = useCallback(
+    (draft: IssueDraft) => {
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+      draftTimer.current = setTimeout(() => {
+        if (draft.title.trim()) saveDraft(draft);
+      }, DEBOUNCE_MS);
+    },
+    [],
+  );
 
   // Save draft on meaningful changes
   useEffect(() => {
@@ -400,26 +411,24 @@ export function NewIssueDialog() {
       description,
       status,
       priority,
-      assigneeId,
+      assigneeValue,
       projectId,
       assigneeModelOverride,
       assigneeThinkingEffort,
       assigneeChrome,
-      assigneeUseProjectWorkspace,
-      knowledgeItemIds: draftKnowledgeIds,
+      useIsolatedExecutionWorkspace,
     });
   }, [
     title,
     description,
     status,
     priority,
-    assigneeId,
+    assigneeValue,
     projectId,
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
-    assigneeUseProjectWorkspace,
-    draftKnowledgeIds,
+    useIsolatedExecutionWorkspace,
     newIssueOpen,
     scheduleSave,
   ]);
@@ -428,6 +437,7 @@ export function NewIssueDialog() {
   useEffect(() => {
     if (!newIssueOpen) return;
     setDialogCompanyId(selectedCompanyId);
+    executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
     if (newIssueDefaults.title) {
@@ -436,33 +446,35 @@ export function NewIssueDialog() {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
-      setAssigneeId(newIssueDefaults.assigneeAgentId ?? "");
+      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setAssigneeUseProjectWorkspace(true);
+      setUseIsolatedExecutionWorkspace(false);
     } else if (draft && draft.title.trim()) {
       setTitle(draft.title);
       setDescription(draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
-      setAssigneeId(newIssueDefaults.assigneeAgentId ?? draft.assigneeId);
+      setAssigneeValue(
+        newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
+          ? assigneeValueFromSelection(newIssueDefaults)
+          : (draft.assigneeValue ?? draft.assigneeId ?? ""),
+      );
       setProjectId(newIssueDefaults.projectId ?? draft.projectId);
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
-      setAssigneeUseProjectWorkspace(draft.assigneeUseProjectWorkspace ?? true);
-      setDraftKnowledgeIds(draft.knowledgeItemIds ?? []);
+      setUseIsolatedExecutionWorkspace(draft.useIsolatedExecutionWorkspace ?? false);
     } else {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
-      setAssigneeId(newIssueDefaults.assigneeAgentId ?? "");
+      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setAssigneeUseProjectWorkspace(true);
-      setDraftKnowledgeIds([]);
+      setUseIsolatedExecutionWorkspace(false);
     }
   }, [newIssueOpen, newIssueDefaults]);
 
@@ -472,7 +484,6 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setAssigneeUseProjectWorkspace(true);
       return;
     }
 
@@ -487,14 +498,6 @@ export function NewIssueDialog() {
     }
   }, [supportsAssigneeOverrides, assigneeAdapterType, assigneeThinkingEffort]);
 
-  useEffect(() => {
-    if (!companyKnowledge) return;
-    const availableIds = new Set(companyKnowledge.map((item) => item.id));
-    setDraftKnowledgeIds((current) =>
-      current.filter((id) => availableIds.has(id))
-    );
-  }, [companyKnowledge]);
-
   // Cleanup timer on unmount
   useEffect(() => {
     return () => {
@@ -507,30 +510,30 @@ export function NewIssueDialog() {
     setDescription("");
     setStatus("todo");
     setPriority("");
-    setAssigneeId("");
+    setAssigneeValue("");
     setProjectId("");
     setAssigneeOptionsOpen(false);
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setAssigneeUseProjectWorkspace(true);
-    setDraftKnowledgeIds([]);
-    setDraftKnowledgeOpen(false);
+    setUseIsolatedExecutionWorkspace(false);
     setExpanded(false);
     setDialogCompanyId(null);
+    setStagedFiles([]);
+    setIsFileDragOver(false);
     setCompanyOpen(false);
+    executionWorkspaceDefaultProjectId.current = null;
   }
 
   function handleCompanyChange(companyId: string) {
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
-    setAssigneeId("");
+    setAssigneeValue("");
     setProjectId("");
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setAssigneeUseProjectWorkspace(true);
-    setDraftKnowledgeIds([]);
+    setUseIsolatedExecutionWorkspace(false);
   }
 
   function discardDraft() {
@@ -540,24 +543,34 @@ export function NewIssueDialog() {
   }
 
   function handleSubmit() {
-    if (!effectiveCompanyId || !title.trim()) return;
+    if (!effectiveCompanyId || !title.trim() || createIssue.isPending) return;
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       modelOverride: assigneeModelOverride,
       thinkingEffortOverride: assigneeThinkingEffort,
       chrome: assigneeChrome,
-      useProjectWorkspace: assigneeUseProjectWorkspace,
     });
+    const selectedProject = orderedProjects.find((project) => project.id === projectId);
+    const executionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
+      ? selectedProject?.executionWorkspacePolicy
+      : null;
+    const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
+      ? {
+          mode: useIsolatedExecutionWorkspace ? "isolated" : "project_primary",
+        }
+      : null;
     createIssue.mutate({
       companyId: effectiveCompanyId,
-      knowledgeItemIds: draftKnowledgeIds,
+      stagedFiles,
       title: title.trim(),
       description: description.trim() || undefined,
       status,
       priority: priority || "medium",
-      ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
+      ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
+      ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
+      ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
     });
   }
 
@@ -568,32 +581,80 @@ export function NewIssueDialog() {
     }
   }
 
-  async function handleAttachImage(evt: ChangeEvent<HTMLInputElement>) {
-    const file = evt.target.files?.[0];
-    if (!file) return;
-    try {
-      const asset = await uploadDescriptionImage.mutateAsync(file);
-      const name = file.name || "image";
-      setDescription((prev) => {
-        const suffix = `![${name}](${asset.contentPath})`;
-        return prev ? `${prev}\n\n${suffix}` : suffix;
-      });
-    } finally {
-      if (attachInputRef.current) attachInputRef.current.value = "";
+  function stageFiles(files: File[]) {
+    if (files.length === 0) return;
+    setStagedFiles((current) => {
+      const next = [...current];
+      for (const file of files) {
+        if (isTextDocumentFile(file)) {
+          const baseName = fileBaseName(file.name);
+          const documentKey = createUniqueDocumentKey(slugifyDocumentKey(baseName), next);
+          next.push({
+            id: `${file.name}:${file.size}:${file.lastModified}:${documentKey}`,
+            file,
+            kind: "document",
+            documentKey,
+            title: titleizeFilename(baseName),
+          });
+          continue;
+        }
+        next.push({
+          id: `${file.name}:${file.size}:${file.lastModified}`,
+          file,
+          kind: "attachment",
+        });
+      }
+      return next;
+    });
+  }
+
+  function handleStageFilesPicked(evt: ChangeEvent<HTMLInputElement>) {
+    stageFiles(Array.from(evt.target.files ?? []));
+    if (stageFileInputRef.current) {
+      stageFileInputRef.current.value = "";
     }
   }
 
-  const hasDraft =
-    title.trim().length > 0 ||
-    description.trim().length > 0 ||
-    draftKnowledgeIds.length > 0;
-  const currentStatus =
-    statuses.find((s) => s.value === status) ?? statuses[1]!;
+  function handleFileDragEnter(evt: DragEvent<HTMLDivElement>) {
+    if (!evt.dataTransfer.types.includes("Files")) return;
+    evt.preventDefault();
+    setIsFileDragOver(true);
+  }
+
+  function handleFileDragOver(evt: DragEvent<HTMLDivElement>) {
+    if (!evt.dataTransfer.types.includes("Files")) return;
+    evt.preventDefault();
+    evt.dataTransfer.dropEffect = "copy";
+    setIsFileDragOver(true);
+  }
+
+  function handleFileDragLeave(evt: DragEvent<HTMLDivElement>) {
+    if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
+    setIsFileDragOver(false);
+  }
+
+  function handleFileDrop(evt: DragEvent<HTMLDivElement>) {
+    if (!evt.dataTransfer.files.length) return;
+    evt.preventDefault();
+    setIsFileDragOver(false);
+    stageFiles(Array.from(evt.dataTransfer.files));
+  }
+
+  function removeStagedFile(id: string) {
+    setStagedFiles((current) => current.filter((file) => file.id !== id));
+  }
+
+  const hasDraft = title.trim().length > 0 || description.trim().length > 0 || stagedFiles.length > 0;
+  const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
   const currentPriority = priorities.find((p) => p.value === priority);
-  const currentAssignee = (agents ?? []).find((a) => a.id === assigneeId);
-  const currentProject = orderedProjects.find(
-    (project) => project.id === projectId
-  );
+  const currentAssignee = selectedAssigneeAgentId
+    ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
+    : null;
+  const currentProject = orderedProjects.find((project) => project.id === projectId);
+  const currentProjectExecutionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
+    ? currentProject?.executionWorkspacePolicy ?? null
+    : null;
+  const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
       ? "Claude options"
@@ -610,16 +671,18 @@ export function NewIssueDialog() {
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
-    () =>
-      sortAgentsByRecency(
+    () => [
+      ...currentUserAssigneeOption(currentUserId),
+      ...sortAgentsByRecency(
         (agents ?? []).filter((agent) => agent.status !== "terminated"),
         recentAssigneeIds,
       ).map((agent) => ({
-        id: agent.id,
+        id: assigneeValueFromSelection({ assigneeAgentId: agent.id }),
         label: agent.name,
         searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
       })),
-    [agents, recentAssigneeIds],
+    ],
+    [agents, currentUserId, recentAssigneeIds],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -628,8 +691,39 @@ export function NewIssueDialog() {
         label: project.name,
         searchText: project.description ?? "",
       })),
-    [orderedProjects]
+    [orderedProjects],
   );
+  const savedDraft = loadDraft();
+  const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
+  const canDiscardDraft = hasDraft || hasSavedDraft;
+  const createIssueErrorMessage =
+    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
+  const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
+  const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
+
+  const handleProjectChange = useCallback((nextProjectId: string) => {
+    setProjectId(nextProjectId);
+    const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
+    const policy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI ? nextProject?.executionWorkspacePolicy : null;
+    executionWorkspaceDefaultProjectId.current = nextProjectId || null;
+    setUseIsolatedExecutionWorkspace(Boolean(policy?.enabled && policy.defaultMode === "isolated"));
+  }, [orderedProjects]);
+
+  useEffect(() => {
+    if (!newIssueOpen || !projectId || executionWorkspaceDefaultProjectId.current === projectId) {
+      return;
+    }
+    const project = orderedProjects.find((entry) => entry.id === projectId);
+    if (!project) return;
+    executionWorkspaceDefaultProjectId.current = projectId;
+    setUseIsolatedExecutionWorkspace(
+      Boolean(
+        SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI &&
+        project.executionWorkspacePolicy?.enabled &&
+        project.executionWorkspacePolicy.defaultMode === "isolated",
+      ),
+    );
+  }, [newIssueOpen, orderedProjects, projectId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
     () => {
       return [...(assigneeAdapterModels ?? [])]
@@ -648,20 +742,12 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
-  const selectedDraftKnowledge = useMemo(() => {
-    const byId = new Map(
-      (companyKnowledge ?? []).map((item) => [item.id, item])
-    );
-    return draftKnowledgeIds
-      .map((knowledgeItemId) => byId.get(knowledgeItemId))
-      .filter((item): item is NonNullable<typeof item> => Boolean(item));
-  }, [companyKnowledge, draftKnowledgeIds]);
 
   return (
     <Dialog
       open={newIssueOpen}
       onOpenChange={(open) => {
-        if (!open) closeNewIssue();
+        if (!open && !createIssue.isPending) closeNewIssue();
       }}
     >
       <DialogContent
@@ -669,10 +755,21 @@ export function NewIssueDialog() {
         aria-describedby={undefined}
         className={cn(
           "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
-          expanded ? "sm:max-w-2xl h-[calc(100dvh-2rem)]" : "sm:max-w-lg"
+          expanded
+            ? "sm:max-w-2xl h-[calc(100dvh-2rem)]"
+            : "sm:max-w-lg"
         )}
         onKeyDown={handleKeyDown}
+        onEscapeKeyDown={(event) => {
+          if (createIssue.isPending) {
+            event.preventDefault();
+          }
+        }}
         onPointerDownOutside={(event) => {
+          if (createIssue.isPending) {
+            event.preventDefault();
+            return;
+          }
           // Radix Dialog's modal DismissableLayer calls preventDefault() on
           // pointerdown events that originate outside the Dialog DOM tree.
           // Popover portals render at the body level (outside the Dialog), so
@@ -685,10 +782,6 @@ export function NewIssueDialog() {
           }
         }}
       >
-        <DialogHeader className="sr-only">
-          <DialogTitle>New issue</DialogTitle>
-        </DialogHeader>
-
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -697,7 +790,7 @@ export function NewIssueDialog() {
                 <button
                   className={cn(
                     "px-1.5 py-0.5 rounded text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity",
-                    !dialogCompany?.brandColor && "bg-muted"
+                    !dialogCompany?.brandColor && "bg-muted",
                   )}
                   style={
                     dialogCompany?.brandColor
@@ -717,7 +810,7 @@ export function NewIssueDialog() {
                     key={c.id}
                     className={cn(
                       "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                      c.id === effectiveCompanyId && "bg-accent"
+                      c.id === effectiveCompanyId && "bg-accent",
                     )}
                     onClick={() => {
                       handleCompanyChange(c.id);
@@ -727,7 +820,7 @@ export function NewIssueDialog() {
                     <span
                       className={cn(
                         "px-1 py-0.5 rounded text-[10px] font-semibold leading-none",
-                        !c.brandColor && "bg-muted"
+                        !c.brandColor && "bg-muted",
                       )}
                       style={
                         c.brandColor
@@ -754,18 +847,16 @@ export function NewIssueDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => setExpanded(!expanded)}
+              disabled={createIssue.isPending}
             >
-              {expanded ? (
-                <Minimize2 className="h-3.5 w-3.5" />
-              ) : (
-                <Maximize2 className="h-3.5 w-3.5" />
-              )}
+              {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
             <Button
               variant="ghost"
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => closeNewIssue()}
+              disabled={createIssue.isPending}
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -784,14 +875,29 @@ export function NewIssueDialog() {
               e.target.style.height = "auto";
               e.target.style.height = `${e.target.scrollHeight}px`;
             }}
+            readOnly={createIssue.isPending}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+              if (
+                e.key === "Enter" &&
+                !e.metaKey &&
+                !e.ctrlKey &&
+                !e.nativeEvent.isComposing
+              ) {
                 e.preventDefault();
                 descriptionEditorRef.current?.focus();
               }
               if (e.key === "Tab" && !e.shiftKey) {
                 e.preventDefault();
-                assigneeSelectorRef.current?.focus();
+                if (assigneeValue) {
+                  // Assignee already set — skip to project or description
+                  if (projectId) {
+                    descriptionEditorRef.current?.focus();
+                  } else {
+                    projectSelectorRef.current?.focus();
+                  }
+                } else {
+                  assigneeSelectorRef.current?.focus();
+                }
               }
             }}
             autoFocus
@@ -804,42 +910,49 @@ export function NewIssueDialog() {
               <span>For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
-                value={assigneeId}
+                value={assigneeValue}
                 options={assigneeOptions}
                 placeholder="Assignee"
                 disablePortal
                 noneLabel="No assignee"
                 searchPlaceholder="Search assignees..."
                 emptyMessage="No assignees found."
-                onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
+                onChange={(value) => {
+                  const nextAssignee = parseAssigneeValue(value);
+                  if (nextAssignee.assigneeAgentId) {
+                    trackRecentAssignee(nextAssignee.assigneeAgentId);
+                  }
+                  setAssigneeValue(value);
+                }}
                 onConfirm={() => {
-                  projectSelectorRef.current?.focus();
+                  if (projectId) {
+                    descriptionEditorRef.current?.focus();
+                  } else {
+                    projectSelectorRef.current?.focus();
+                  }
                 }}
                 renderTriggerValue={(option) =>
-                  option && currentAssignee ? (
-                    <>
-                      <AgentIcon
-                        icon={currentAssignee.icon}
-                        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                      />
+                  option ? (
+                    currentAssignee ? (
+                      <>
+                        <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    ) : (
                       <span className="truncate">{option.label}</span>
-                    </>
+                    )
                   ) : (
                     <span className="text-muted-foreground">Assignee</span>
                   )
                 }
                 renderOption={(option) => {
-                  if (!option.id)
-                    return <span className="truncate">{option.label}</span>;
-                  const assignee = (agents ?? []).find(
-                    (agent) => agent.id === option.id
-                  );
+                  if (!option.id) return <span className="truncate">{option.label}</span>;
+                  const assignee = parseAssigneeValue(option.id).assigneeAgentId
+                    ? (agents ?? []).find((agent) => agent.id === parseAssigneeValue(option.id).assigneeAgentId)
+                    : null;
                   return (
                     <>
-                      <AgentIcon
-                        icon={assignee?.icon}
-                        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                      />
+                      {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                       <span className="truncate">{option.label}</span>
                     </>
                   );
@@ -855,7 +968,7 @@ export function NewIssueDialog() {
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
-                onChange={setProjectId}
+                onChange={handleProjectChange}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
                 }}
@@ -864,9 +977,7 @@ export function NewIssueDialog() {
                     <>
                       <span
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{
-                          backgroundColor: currentProject.color ?? "#6366f1",
-                        }}
+                        style={{ backgroundColor: currentProject.color ?? "#6366f1" }}
                       />
                       <span className="truncate">{option.label}</span>
                     </>
@@ -875,11 +986,8 @@ export function NewIssueDialog() {
                   )
                 }
                 renderOption={(option) => {
-                  if (!option.id)
-                    return <span className="truncate">{option.label}</span>;
-                  const project = orderedProjects.find(
-                    (item) => item.id === option.id
-                  );
+                  if (!option.id) return <span className="truncate">{option.label}</span>;
+                  const project = orderedProjects.find((item) => item.id === option.id);
                   return (
                     <>
                       <span
@@ -895,17 +1003,41 @@ export function NewIssueDialog() {
           </div>
         </div>
 
+        {currentProjectSupportsExecutionWorkspace && (
+          <div className="px-4 pb-2 shrink-0">
+            <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <div className="space-y-0.5">
+                <div className="text-xs font-medium">Use isolated issue checkout</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Create an issue-specific execution workspace instead of using the project's primary checkout.
+                </div>
+              </div>
+              <button
+                className={cn(
+                  "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                  useIsolatedExecutionWorkspace ? "bg-green-600" : "bg-muted",
+                )}
+                onClick={() => setUseIsolatedExecutionWorkspace((value) => !value)}
+                type="button"
+              >
+                <span
+                  className={cn(
+                    "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                    useIsolatedExecutionWorkspace ? "translate-x-4.5" : "translate-x-0.5",
+                  )}
+                />
+              </button>
+            </div>
+          </div>
+        )}
+
         {supportsAssigneeOverrides && (
           <div className="px-4 pb-2 shrink-0">
             <button
               className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setAssigneeOptionsOpen((open) => !open)}
             >
-              {assigneeOptionsOpen ? (
-                <ChevronDown className="h-3 w-3" />
-              ) : (
-                <ChevronRight className="h-3 w-3" />
-              )}
+              {assigneeOptionsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
               {assigneeOptionsTitle}
             </button>
             {assigneeOptionsOpen && (
@@ -924,9 +1056,7 @@ export function NewIssueDialog() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">
-                    Thinking effort
-                  </div>
+                  <div className="text-xs text-muted-foreground">Thinking effort</div>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {thinkingEffortOptions.map((option) => (
                       <button
@@ -944,9 +1074,7 @@ export function NewIssueDialog() {
                 </div>
                 {assigneeAdapterType === "claude_local" && (
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                    <div className="text-xs text-muted-foreground">
-                      Enable Chrome (--chrome)
-                    </div>
+                    <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
                     <button
                       className={cn(
                         "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
@@ -963,29 +1091,6 @@ export function NewIssueDialog() {
                     </button>
                   </div>
                 )}
-                <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                  <div className="text-xs text-muted-foreground">
-                    Use project workspace
-                  </div>
-                  <button
-                    className={cn(
-                      "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                      assigneeUseProjectWorkspace ? "bg-green-600" : "bg-muted"
-                    )}
-                    onClick={() =>
-                      setAssigneeUseProjectWorkspace((value) => !value)
-                    }
-                  >
-                    <span
-                      className={cn(
-                        "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                        assigneeUseProjectWorkspace
-                          ? "translate-x-4.5"
-                          : "translate-x-0.5"
-                      )}
-                    />
-                  </button>
-                </div>
               </div>
             )}
           </div>
@@ -993,27 +1098,102 @@ export function NewIssueDialog() {
 
         {/* Description */}
         <div
-          className={cn(
-            "px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3",
-            expanded ? "flex-1" : ""
-          )}
+          className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}
+          onDragEnter={handleFileDragEnter}
+          onDragOver={handleFileDragOver}
+          onDragLeave={handleFileDragLeave}
+          onDrop={handleFileDrop}
         >
-          <MarkdownEditor
-            ref={descriptionEditorRef}
-            value={description}
-            onChange={setDescription}
-            placeholder="Add description..."
-            bordered={false}
-            mentions={mentionOptions}
-            contentClassName={cn(
-              "text-sm text-muted-foreground pb-12",
-              expanded ? "min-h-[220px]" : "min-h-[120px]"
+          <div
+            className={cn(
+              "rounded-md transition-colors",
+              isFileDragOver && "bg-accent/20",
             )}
-            imageUploadHandler={async (file) => {
-              const asset = await uploadDescriptionImage.mutateAsync(file);
-              return asset.contentPath;
-            }}
-          />
+          >
+            <MarkdownEditor
+              ref={descriptionEditorRef}
+              value={description}
+              onChange={setDescription}
+              placeholder="Add description..."
+              bordered={false}
+              mentions={mentionOptions}
+              contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+              imageUploadHandler={async (file) => {
+                const asset = await uploadDescriptionImage.mutateAsync(file);
+                return asset.contentPath;
+              }}
+            />
+          </div>
+          {stagedFiles.length > 0 ? (
+            <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
+              {stagedDocuments.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="text-xs font-medium text-muted-foreground">Documents</div>
+                  <div className="space-y-2">
+                    {stagedDocuments.map((file) => (
+                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                              {file.documentKey}
+                            </span>
+                            <span className="truncate text-sm">{file.file.name}</span>
+                          </div>
+                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                            <FileText className="h-3.5 w-3.5" />
+                            <span>{file.title || file.file.name}</span>
+                            <span>•</span>
+                            <span>{formatFileSize(file.file)}</span>
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className="shrink-0 text-muted-foreground"
+                          onClick={() => removeStagedFile(file.id)}
+                          disabled={createIssue.isPending}
+                          title="Remove document"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {stagedAttachments.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+                  <div className="space-y-2">
+                    {stagedAttachments.map((file) => (
+                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <span className="truncate text-sm">{file.file.name}</span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            {file.file.type || "application/octet-stream"} • {formatFileSize(file.file)}
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className="shrink-0 text-muted-foreground"
+                          onClick={() => removeStagedFile(file.id)}
+                          disabled={createIssue.isPending}
+                          title="Remove attachment"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         {/* Property chips bar */}
@@ -1034,10 +1214,7 @@ export function NewIssueDialog() {
                     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
                     s.value === status && "bg-accent"
                   )}
-                  onClick={() => {
-                    setStatus(s.value);
-                    setStatusOpen(false);
-                  }}
+                  onClick={() => { setStatus(s.value); setStatusOpen(false); }}
                 >
                   <CircleDot className={cn("h-3 w-3", s.color)} />
                   {s.label}
@@ -1052,9 +1229,7 @@ export function NewIssueDialog() {
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
                 {currentPriority ? (
                   <>
-                    <currentPriority.icon
-                      className={cn("h-3 w-3", currentPriority.color)}
-                    />
+                    <currentPriority.icon className={cn("h-3 w-3", currentPriority.color)} />
                     {currentPriority.label}
                   </>
                 ) : (
@@ -1073,10 +1248,7 @@ export function NewIssueDialog() {
                     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
                     p.value === priority && "bg-accent"
                   )}
-                  onClick={() => {
-                    setPriority(p.value);
-                    setPriorityOpen(false);
-                  }}
+                  onClick={() => { setPriority(p.value); setPriorityOpen(false); }}
                 >
                   <p.icon className={cn("h-3 w-3", p.color)} />
                   {p.label}
@@ -1091,32 +1263,21 @@ export function NewIssueDialog() {
             Labels
           </button>
 
-          {/* Attach image chip */}
           <input
-            ref={attachInputRef}
+            ref={stageFileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
+            accept={STAGED_FILE_ACCEPT}
             className="hidden"
-            onChange={handleAttachImage}
+            onChange={handleStageFilesPicked}
+            multiple
           />
           <button
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
-            onClick={() => attachInputRef.current?.click()}
-            disabled={uploadDescriptionImage.isPending}
+            onClick={() => stageFileInputRef.current?.click()}
+            disabled={createIssue.isPending}
           >
             <Paperclip className="h-3 w-3" />
-            {uploadDescriptionImage.isPending ? "Uploading..." : "Image"}
-          </button>
-
-          <button
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
-            onClick={() => setDraftKnowledgeOpen(true)}
-            disabled={!companyKnowledge}
-          >
-            <BookOpen className="h-3 w-3" />
-            {draftKnowledgeIds.length > 0
-              ? `Knowledge (${draftKnowledgeIds.length})`
-              : "Knowledge"}
+            Upload
           </button>
 
           {/* More (dates) */}
@@ -1139,32 +1300,6 @@ export function NewIssueDialog() {
           </Popover>
         </div>
 
-        {selectedDraftKnowledge.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2.5 shrink-0">
-            <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Attached knowledge
-            </span>
-            {selectedDraftKnowledge.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent/50"
-                onClick={() =>
-                  setDraftKnowledgeIds((current) =>
-                    current.filter(
-                      (knowledgeItemId) => knowledgeItemId !== item.id
-                    )
-                  )
-                }
-                title={`Remove ${item.title}`}
-              >
-                <span className="max-w-48 truncate">{item.title}</span>
-                <X className="h-3 w-3 text-muted-foreground" />
-              </button>
-            ))}
-          </div>
-        )}
-
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">
           <Button
@@ -1172,31 +1307,35 @@ export function NewIssueDialog() {
             size="sm"
             className="text-muted-foreground"
             onClick={discardDraft}
-            disabled={!hasDraft && !loadDraft()}
+            disabled={createIssue.isPending || !canDiscardDraft}
           >
             Discard Draft
           </Button>
-          <Button
-            size="sm"
-            disabled={!title.trim() || createIssue.isPending}
-            onClick={handleSubmit}
-          >
-            {createIssue.isPending ? "Creating..." : "Create Issue"}
-          </Button>
+          <div className="flex items-center gap-3">
+            <div className="min-h-5 text-right">
+              {createIssue.isPending ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Creating issue...
+                </span>
+              ) : createIssue.isError ? (
+                <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
+              ) : null}
+            </div>
+            <Button
+              size="sm"
+              className="min-w-[8.5rem] disabled:opacity-100"
+              disabled={!title.trim() || createIssue.isPending}
+              onClick={handleSubmit}
+              aria-busy={createIssue.isPending}
+            >
+              <span className="inline-flex items-center justify-center gap-1.5">
+                {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                <span>{createIssue.isPending ? "Creating..." : "Create Issue"}</span>
+              </span>
+            </Button>
+          </div>
         </div>
-        <KnowledgeAttachDialog
-          open={draftKnowledgeOpen}
-          onOpenChange={setDraftKnowledgeOpen}
-          items={companyKnowledge ?? []}
-          initialSelectedIds={draftKnowledgeIds}
-          title="Attach knowledge before creating the issue"
-          description="Search the company library and pre-attach reusable context for the new issue."
-          confirmLabel="Use selected"
-          onConfirm={async (knowledgeItemIds) => {
-            setDraftKnowledgeIds(knowledgeItemIds);
-            setDraftKnowledgeOpen(false);
-          }}
-        />
       </DialogContent>
     </Dialog>
   );

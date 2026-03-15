@@ -13,9 +13,22 @@ export type { AssetImage } from "./asset.js";
 export type { KnowledgeItem, IssueKnowledgeAttachment } from "./knowledge.js";
 export type { Project, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
+  WorkspaceRuntimeService,
+  ExecutionWorkspaceStrategyType,
+  ExecutionWorkspaceMode,
+  ExecutionWorkspaceStrategy,
+  ProjectExecutionWorkspacePolicy,
+  IssueExecutionWorkspaceSettings,
+} from "./workspace-runtime.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueComment,
+  IssueDocument,
+  IssueDocumentSummary,
+  DocumentRevision,
+  DocumentFormat,
+  LegacyPlanDocument,
   IssueAncestor,
   IssueAncestorProject,
   IssueAncestorGoal,
@@ -41,6 +54,7 @@ export type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
+  InstanceSchedulerHeartbeatAgent,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
@@ -71,3 +85,25 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
+export type {
+  JsonSchema,
+  PluginJobDeclaration,
+  PluginWebhookDeclaration,
+  PluginToolDeclaration,
+  PluginUiSlotDeclaration,
+  PluginLauncherActionDeclaration,
+  PluginLauncherRenderDeclaration,
+  PluginLauncherRenderContextSnapshot,
+  PluginLauncherDeclaration,
+  PluginMinimumHostVersion,
+  PluginUiDeclaration,
+  PaperclipPluginManifestV1,
+  PluginRecord,
+  PluginStateRecord,
+  PluginConfig,
+  PluginEntityRecord,
+  PluginEntityQuery,
+  PluginJobRecord,
+  PluginJobRunRecord,
+  PluginWebhookDeliveryRecord,
+} from "./plugin.js";
