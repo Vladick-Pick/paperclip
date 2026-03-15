@@ -31,7 +31,8 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
-      refetchOnWindowFocus: true,
+      // Focus-driven refetch creates noticeable request bursts on heavy pages.
+      refetchOnWindowFocus: false,
     },
   },
 });
