@@ -51,6 +51,7 @@ import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, "../../..");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -577,6 +578,51 @@ function resolveManifestPath(
   return null;
 }
 
+type RepoLocalPluginBuildOptions = {
+  repoRoot?: string;
+  pathExists?: (candidatePath: string) => boolean;
+  runCommand?: (
+    file: string,
+    args: string[],
+    options: { timeout: number },
+  ) => Promise<unknown>;
+};
+
+export async function ensureRepoLocalPluginBuildArtifacts(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+  options: RepoLocalPluginBuildOptions = {},
+): Promise<void> {
+  const repoRoot = options.repoRoot ?? REPO_ROOT;
+  const pathExists = options.pathExists ?? existsSync;
+  const runCommand = options.runCommand ?? execFileAsync;
+
+  if (!isPathInsideDir(packageRoot, repoRoot)) {
+    return;
+  }
+
+  const scripts = pkgJson.scripts;
+  const buildScript =
+    scripts && typeof scripts === "object" && !Array.isArray(scripts)
+      ? (scripts as Record<string, unknown>).build
+      : null;
+
+  if (typeof buildScript !== "string" || buildScript.trim().length === 0) {
+    return;
+  }
+
+  const manifestPath = resolveManifestPath(packageRoot, pkgJson);
+  if (manifestPath && pathExists(manifestPath)) {
+    return;
+  }
+
+  await runCommand(
+    "pnpm",
+    ["--dir", packageRoot, "build"],
+    { timeout: 120_000 },
+  );
+}
+
 function parseSemver(version: string): ParsedSemver | null {
   const match = version.match(
     /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/,
@@ -865,7 +911,17 @@ export function pluginLoader(
     const pkgJson = await readPackageJson(resolvedPackagePath);
     if (!pkgJson) throw new Error(`Missing package.json at ${resolvedPackagePath}`);
 
-    const manifestPath = resolveManifestPath(resolvedPackagePath, pkgJson);
+    let manifestPath = resolveManifestPath(resolvedPackagePath, pkgJson);
+    if (localPath && (!manifestPath || !existsSync(manifestPath))) {
+      try {
+        await ensureRepoLocalPluginBuildArtifacts(resolvedPackagePath, pkgJson);
+      } catch (err) {
+        throw new Error(
+          `Failed to build repo-local plugin package ${resolvedPackageName} at ${resolvedPackagePath}: ${String(err)}`,
+        );
+      }
+      manifestPath = resolveManifestPath(resolvedPackagePath, pkgJson);
+    }
     if (!manifestPath || !existsSync(manifestPath)) {
       throw new Error(
         `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a Paperclip plugin (no manifest found).`,
