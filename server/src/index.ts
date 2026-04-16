@@ -22,6 +22,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { resolveEmbeddedPostgresFlags } from "./embedded-postgres-flags.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService } from "./services/index.js";
@@ -52,6 +53,7 @@ type EmbeddedPostgresCtor = new (opts: {
   password: string;
   port: number;
   persistent: boolean;
+  postgresFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
@@ -247,6 +249,7 @@ if (config.databaseUrl) {
 
   const dataDir = resolve(config.embeddedPostgresDataDir);
   const configuredPort = config.embeddedPostgresPort;
+  const embeddedPostgresFlags = resolveEmbeddedPostgresFlags();
   let port = configuredPort;
   const embeddedPostgresLogBuffer: string[] = [];
   const EMBEDDED_POSTGRES_LOG_BUFFER_LIMIT = 120;
@@ -323,6 +326,7 @@ if (config.databaseUrl) {
       password: "paperclip",
       port,
       persistent: true,
+      postgresFlags: embeddedPostgresFlags,
       onLog: appendEmbeddedPostgresLog,
       onError: appendEmbeddedPostgresLog,
     });
