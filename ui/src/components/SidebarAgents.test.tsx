@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -30,6 +31,7 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
 const mockOpenNewAgent = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
+const mockSidebarState = vi.hoisted(() => ({ collapsed: false, peeking: false }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -75,6 +77,8 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
     isMobile: false,
     setSidebarOpen: mockSetSidebarOpen,
+    collapsed: mockSidebarState.collapsed,
+    peeking: mockSidebarState.peeking,
   }),
 }));
 
@@ -206,6 +210,8 @@ describe("SidebarAgents", () => {
   let memberships: ResourceMemberships;
 
   beforeEach(() => {
+    mockSidebarState.collapsed = false;
+    mockSidebarState.peeking = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
@@ -227,18 +233,28 @@ describe("SidebarAgents", () => {
     };
     mockResourceMembershipsApi.listMine.mockImplementation(() => Promise.resolve(memberships));
     mockResourceMembershipsApi.updateAgent.mockImplementation((_companyId, agentId, data) => {
+      const previousState = memberships.agentMemberships[agentId] ?? "joined";
+      const nextState = data.starred === true ? "joined" : data.state ?? previousState;
+      const starredAgentIds = memberships.starredAgentIds ?? [];
+      const nextStarredAgentIds = data.starred === true
+        ? starredAgentIds.includes(agentId) ? starredAgentIds : [agentId, ...starredAgentIds]
+        : data.starred === false || nextState === "left"
+          ? starredAgentIds.filter((id) => id !== agentId)
+          : starredAgentIds;
       memberships = {
         ...memberships,
         agentMemberships: {
           ...memberships.agentMemberships,
-          [agentId]: data.state,
+          [agentId]: nextState,
         },
+        starredAgentIds: nextStarredAgentIds,
         updatedAt: new Date(),
       };
       return Promise.resolve({
         resourceType: "agent",
         resourceId: agentId,
-        state: data.state,
+        state: nextState,
+        starredAt: data.starred === true ? new Date() : null,
       });
     });
     localStorage.clear();
@@ -285,6 +301,125 @@ describe("SidebarAgents", () => {
     });
     await flushReact();
   }
+
+  async function renderRailSidebarAgents() {
+    mockSidebarState.collapsed = true;
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <SidebarAgents streamlined />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  it("renders icon-only agent rows with tooltips and no row actions in the rail", async () => {
+    mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" })]);
+
+    await renderRailSidebarAgents();
+
+    // The agent name is preserved in the a11y tree but kept in flow (zero-width,
+    // clipped) so the row stays 1:1 tall with the expanded state (PAP-10676); the
+    // row links become tooltip triggers and the per-row actions dropdown is dropped.
+    const nameSpan = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Alpha");
+    expect(nameSpan?.className).not.toContain("sr-only");
+    expect(nameSpan?.className).toContain("w-0");
+    expect(nameSpan?.className).toContain("overflow-hidden");
+    const agentLink = container.querySelector('a[href^="/agents/"]:not([href="/agents/all"])');
+    expect(agentLink?.parentElement?.getAttribute("data-slot")).toBe("tooltip-trigger");
+    expect(container.querySelector('button[aria-label="Open actions for Alpha"]')).toBeNull();
+
+    // The section header collapses to a divider (no caret / section menu).
+    expect(container.querySelector('button[aria-label="Agents section actions"]')).toBeNull();
+  });
+
+  it("pins starred agents at the top without subheadings and dedupes them from the recent list", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+    ]);
+    memberships = {
+      projectMemberships: {},
+      agentMemberships: {},
+      starredProjectIds: [],
+      starredAgentIds: ["agent-b"],
+      projectStarredAt: {},
+      agentStarredAt: {},
+      updatedAt: new Date(),
+    };
+
+    await renderSidebarAgents();
+
+    expect(container.textContent).not.toContain("Starred");
+    expect(container.textContent).not.toContain("Recently active");
+    // Bravo is starred -> shown once at the top, deduped from recent.
+    const labels = agentLinkLabels(container);
+    expect(labels.filter((label) => label === "Bravo")).toHaveLength(1);
+    expect(labels).toContain("Alpha");
+    // Starred order lands the starred agent first.
+    expect(labels[0]).toBe("Bravo");
+
+    // The starred row offers an explicit "Remove from starred" menu action.
+    await openAgentMenu("Open actions for Bravo");
+    expect(document.body.textContent).toContain("Remove from starred");
+  });
+
+  it("offers star agent from an unstarred sidebar agent menu", async () => {
+    await renderSidebarAgents();
+    await openAgentMenu();
+
+    const starItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((element) => element.textContent?.includes("Star agent"));
+    expect(starItem).toBeTruthy();
+
+    await act(async () => {
+      starItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockResourceMembershipsApi.updateAgent).toHaveBeenCalledWith(
+      "company-1",
+      "agent-1",
+      { state: undefined, starred: true },
+    );
+    expect(document.body.querySelector('button[aria-label="Unstar Alpha"]')).not.toBeNull();
+  });
+
+  it("keeps the agent starred and toasts when an unstar request fails", async () => {
+    mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" })]);
+    memberships = {
+      projectMemberships: {},
+      agentMemberships: { "agent-b": "joined" },
+      starredProjectIds: [],
+      starredAgentIds: ["agent-b"],
+      projectStarredAt: {},
+      agentStarredAt: {},
+      updatedAt: new Date(),
+    };
+    mockResourceMembershipsApi.updateAgent.mockRejectedValue(new Error("nope"));
+
+    await renderSidebarAgents();
+
+    const unstar = document.body.querySelector('button[aria-label="Unstar Bravo"]');
+    expect(unstar).not.toBeNull();
+
+    await act(async () => {
+      unstar?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // Optimistic unstar is rolled back → the row stays in the starred group.
+    expect(document.body.querySelector('button[aria-label="Unstar Bravo"]')).not.toBeNull();
+    expect(mockPushToast).toHaveBeenCalledWith(
+      expect.objectContaining({ tone: "error" }),
+    );
+  });
 
   it("keeps top mode in stored org-aware order", async () => {
     localStorage.setItem("paperclip.agentOrder:company-1:user-1", JSON.stringify(["agent-b", "agent-a", "agent-c"]));
