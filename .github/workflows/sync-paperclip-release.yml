@@ -1,6 +1,11 @@
 name: Sync Stable Paperclip Release
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/sync-paperclip-release.yml
   schedule:
     - cron: "17 */6 * * *"
   workflow_dispatch:
@@ -18,23 +23,98 @@ jobs:
 
     steps:
       - name: Checkout deployment branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: codex/fix-embedded-postgres-dsm-mmap-upstream
           fetch-depth: 0
 
-      - name: Merge latest official stable release
+      - name: Import latest official stable release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "paperclip-release-sync[bot]"
           git config user.email "paperclip-release-sync[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/paperclipai/paperclip.git
-          git fetch --tags upstream
           latest_tag="$(gh api repos/paperclipai/paperclip/releases/latest --jq .tag_name)"
-          if git merge-base --is-ancestor "$latest_tag" HEAD; then
+          if [[ ! "$latest_tag" =~ ^v[0-9]{4}\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected stable release tag: ${latest_tag}" >&2
+            exit 1
+          fi
+          git fetch --force --no-tags upstream "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
+          latest_sha="$(git rev-parse "${latest_tag}^{commit}")"
+          release_marker="${latest_tag} ${latest_sha}"
+          current_marker="$(cat .paperclip-upstream-release 2>/dev/null || true)"
+          if [[ "$current_marker" == "$release_marker" ]]; then
             echo "Deployment branch already contains ${latest_tag}."
             exit 0
           fi
-          git merge --no-edit --no-ff "$latest_tag"
+
+          if [[ -n "$current_marker" ]]; then
+            read -r current_tag base_sha marker_extra <<< "$current_marker"
+            if [[ ! "$current_tag" =~ ^v[0-9]{4}\.[0-9]+\.[0-9]+$ ||
+                  ! "$base_sha" =~ ^[0-9a-f]{40}$ ||
+                  -n "$marker_extra" ]]; then
+              echo "Malformed .paperclip-upstream-release: ${current_marker}" >&2
+              exit 1
+            fi
+            git cat-file -e "${base_sha}^{commit}"
+          else
+            base_sha="$(git merge-base HEAD "$latest_sha" || true)"
+            if [[ -z "$base_sha" ]]; then
+              echo "Cannot determine the initial upstream release baseline." >&2
+              exit 1
+            fi
+          fi
+          if ! git merge-base --is-ancestor "$base_sha" "$latest_sha"; then
+            echo "Stable release ${latest_tag} is not a descendant of ${base_sha}." >&2
+            exit 1
+          fi
+
+          apply_status=0
+          git diff --binary "$base_sha" "$latest_sha" -- \
+            . \
+            ':(exclude).github/workflows/**' \
+            ':(exclude).paperclip-upstream-release' |
+            git apply --3way --index --allow-empty || apply_status=$?
+          if (( apply_status != 0 )); then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [[ -z "$conflicts" ]]; then
+              echo "Release import failed before producing resolvable conflicts." >&2
+              exit "$apply_status"
+            fi
+            echo "Release import has code conflicts that require review:" >&2
+            printf '%s\n' "$conflicts" >&2
+            exit 1
+          fi
+
+          # Fork policy is excluded, so upstream workflow history never becomes reachable.
+          printf '%s\n' "$release_marker" > .paperclip-upstream-release
+          git add .paperclip-upstream-release
+
+          remaining_conflicts="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$remaining_conflicts" ]]; then
+            echo "Release import still has unresolved conflicts:" >&2
+            printf '%s\n' "$remaining_conflicts" >&2
+            exit 1
+          fi
+          if ! git diff --cached --quiet -- .github/workflows; then
+            echo "Release import still changes fork-owned workflows." >&2
+            exit 1
+          fi
+
+          git commit \
+            -m "Import official Paperclip ${latest_tag}" \
+            -m "Upstream commit: ${latest_sha}"
+          if ! git diff --quiet HEAD^1 HEAD -- .github/workflows; then
+            echo "Release commit changed fork-owned workflows." >&2
+            exit 1
+          fi
+          if git rev-parse --verify HEAD^2 >/dev/null 2>&1; then
+            echo "Release import unexpectedly created a merge commit." >&2
+            exit 1
+          fi
+          if [[ "$(cat .paperclip-upstream-release)" != "$release_marker" ]]; then
+            echo "Release marker does not match imported upstream commit." >&2
+            exit 1
+          fi
           git push origin HEAD:refs/heads/codex/fix-embedded-postgres-dsm-mmap-upstream

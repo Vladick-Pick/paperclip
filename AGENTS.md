@@ -112,7 +112,30 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
-## 8. API and Auth Expectations
+## 8. Production Updates
+
+For this NoHum project, "Paperclip updates" means the production deployment on
+`ssh paperclip-vps` and stable releases from
+`https://github.com/paperclipai/paperclip.git`.
+
+- The deploy source is fork `Vladick-Pick/paperclip`, branch
+  `codex/fix-embedded-postgres-dsm-mmap-upstream`. It preserves the production
+  embedded-Postgres Linux patch while importing official stable release code.
+- `.github/workflows/sync-paperclip-release.yml` in fork `master` performs the
+  release import. It applies the incremental diff from the previously imported
+  upstream commit and creates a linear fork commit, so upstream workflow history
+  never becomes reachable from the deploy branch. `.github/workflows/**` is
+  fork-owned policy and is excluded from every release import.
+  `.paperclip-upstream-release` records the imported stable tag and upstream
+  commit, which is the baseline for the next import. Do not add a privileged PAT
+  merely to import upstream workflow changes.
+- `/home/paperclip/paperclip-auto-update.sh` checks the deploy branch hourly and
+  calls `/home/paperclip/update-paperclip.sh` only when the SHA changes.
+- The deploy script creates an immutable release, backs up and migrates the
+  database, switches `/home/paperclip/paperclip`, verifies service restart and
+  health, and rolls the symlink back on failure.
+
+## 9. API and Auth Expectations
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
@@ -126,13 +149,13 @@ When adding endpoints:
 - write activity log entries for mutations
 - return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
-## 9. UI Expectations
+## 10. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Definition of Done
+## 11. Definition of Done
 
 A change is done when all are true:
 
