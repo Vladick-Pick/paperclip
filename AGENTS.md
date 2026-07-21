@@ -133,7 +133,8 @@ For this NoHum project, "Paperclip updates" means the production deployment on
   calls `/home/paperclip/update-paperclip.sh` only when the SHA changes.
 - The deploy script creates an immutable release, backs up and migrates the
   database, switches `/home/paperclip/paperclip`, verifies service restart and
-  health, and rolls the symlink back on failure.
+  health, and rolls the symlink back on failure. It refuses to start a deploy
+  below 4 GiB free space; old releases are not deleted automatically.
 
 ## 9. API and Auth Expectations
 
