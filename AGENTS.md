@@ -135,6 +135,12 @@ For this NoHum project, "Paperclip updates" means the production deployment on
   database, switches `/home/paperclip/paperclip`, verifies service restart and
   health, and rolls the symlink back on failure. It refuses to start a deploy
   below 4 GiB free space; old releases are not deleted automatically.
+- A failed stable-release sync creates or updates the assigned GitHub issue
+  `[Incident] Paperclip stable release sync failed`; the next successful sync
+  closes it. This is the durable incident record. Email delivery still depends
+  on the repository owner's GitHub notification settings and is not a substitute
+  for the issue. Use the workflow's `test_incident` dispatch input to test this
+  path without importing or deploying release code.
 
 ## 9. API and Auth Expectations
 

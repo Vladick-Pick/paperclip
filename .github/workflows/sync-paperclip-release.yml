@@ -9,6 +9,12 @@ on:
   schedule:
     - cron: "17 */6 * * *"
   workflow_dispatch:
+    inputs:
+      test_incident:
+        description: Create a test release-sync incident without importing a release
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: paperclip-release-sync
@@ -20,6 +26,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      issues: write
 
     steps:
       - name: Checkout deployment branch
@@ -27,6 +34,12 @@ jobs:
         with:
           ref: codex/fix-embedded-postgres-dsm-mmap-upstream
           fetch-depth: 0
+
+      - name: Exercise incident notification
+        if: ${{ inputs.test_incident }}
+        run: |
+          echo "Intentional failure requested to verify release-sync incident notifications." >&2
+          exit 1
 
       - name: Import latest official stable release
         env:
@@ -57,17 +70,27 @@ jobs:
               echo "Malformed .paperclip-upstream-release: ${current_marker}" >&2
               exit 1
             fi
-            git cat-file -e "${base_sha}^{commit}"
+            git fetch --force --no-tags upstream \
+              "refs/tags/${current_tag}:refs/tags/${current_tag}"
+            fetched_base_sha="$(git rev-parse "${current_tag}^{commit}")"
+            if [[ "$fetched_base_sha" != "$base_sha" ]]; then
+              echo "Release marker SHA ${base_sha} does not match ${current_tag} at ${fetched_base_sha}." >&2
+              exit 1
+            fi
+            IFS=. read -r current_year current_release current_patch <<< "${current_tag#v}"
+            IFS=. read -r latest_year latest_release latest_patch <<< "${latest_tag#v}"
+            if (( latest_year < current_year ||
+                  latest_year == current_year && latest_release < current_release ||
+                  latest_year == current_year && latest_release == current_release && latest_patch < current_patch )); then
+              echo "Refusing to roll back stable release ${current_tag} to ${latest_tag}." >&2
+              exit 1
+            fi
           else
             base_sha="$(git merge-base HEAD "$latest_sha" || true)"
             if [[ -z "$base_sha" ]]; then
               echo "Cannot determine the initial upstream release baseline." >&2
               exit 1
             fi
-          fi
-          if ! git merge-base --is-ancestor "$base_sha" "$latest_sha"; then
-            echo "Stable release ${latest_tag} is not a descendant of ${base_sha}." >&2
-            exit 1
           fi
 
           apply_status=0
@@ -118,3 +141,47 @@ jobs:
             exit 1
           fi
           git push origin HEAD:refs/heads/codex/fix-embedded-postgres-dsm-mmap-upstream
+
+      - name: Report release sync incident
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          incident_title="[Incident] Paperclip stable release sync failed"
+          incident_body="The stable-release sync failed in ${RUN_URL}. The deployment branch and production server may be behind the latest official stable release."
+          issue_number="$(
+            gh api --paginate "repos/${REPOSITORY}/issues?state=open&per_page=100" \
+              --jq ".[] | select(.pull_request == null and .title == \"${incident_title}\") | .number" |
+              head -n 1
+          )"
+          if [[ -n "$issue_number" ]]; then
+            gh issue comment "$issue_number" --repo "$REPOSITORY" --body "$incident_body"
+          else
+            gh issue create \
+              --repo "$REPOSITORY" \
+              --title "$incident_title" \
+              --body "$incident_body" \
+              --assignee "$REPOSITORY_OWNER"
+          fi
+
+      - name: Resolve release sync incident
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          incident_title="[Incident] Paperclip stable release sync failed"
+          issue_number="$(
+            gh api --paginate "repos/${REPOSITORY}/issues?state=open&per_page=100" \
+              --jq ".[] | select(.pull_request == null and .title == \"${incident_title}\") | .number" |
+              head -n 1
+          )"
+          if [[ -n "$issue_number" ]]; then
+            gh issue close "$issue_number" \
+              --repo "$REPOSITORY" \
+              --comment "Resolved by successful release sync: ${RUN_URL}"
+          fi
