@@ -1,0 +1,124 @@
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -31671,7 +31671,8 @@ function buildMcpPermissionRequest(sessionId, params, context, nextStandaloneToo
+           toolCall: {
+             toolCallId: context.correlatedCallId,
+             kind: "execute",
+-            status: "pending"
++            status: "pending",
++            rawInput: { serverName: params.serverName }
+           },
+           _meta: { is_mcp_tool_approval: true },
+           options
+@@ -31858,7 +31859,7 @@ var CodexElicitationHandler = class {
+   async handleElicitation(params) {
+     try {
+       const context = this.createMcpElicitationContext(params);
+-      if (this.shouldUseAcpElicitation(params)) {
++      if (!context.isToolApproval && this.shouldUseAcpElicitation(params)) {
+         const response2 = await this.connection.request(
+           methods.client.elicitation.create,
+           this.buildElicitationRequest(params, context),
+@@ -33444,6 +33445,18 @@ var DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+ var SUPPORTED_GATEWAY_PROTOCOLS = {
+   openai: "responses"
+ };
++function paperclipBaseInstructions(request) {
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") return void 0;
++  const prompt = request?._meta?.systemPrompt;
++  if (typeof prompt === "string") return prompt;
++  if (prompt && typeof prompt === "object" && typeof prompt.append === "string") return prompt.append;
++  return void 0;
++}
++function paperclipSandboxPolicy(sandboxPolicy) {
++  const networkAccess = process.env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS;
++  if (sandboxPolicy.type !== "workspaceWrite" || !["true", "false"].includes(networkAccess)) return sandboxPolicy;
++  return { ...sandboxPolicy, networkAccess: networkAccess === "true" && process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled" };
++}
+ var CodexAcpClient = class {
+   codexClient;
+   config;
+@@ -33812,6 +33825,7 @@ var CodexAcpClient = class {
+       excludeTurns: true,
+       config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []),
+       cwd: request.cwd,
++      baseInstructions: paperclipBaseInstructions(request),
+       modelProvider: await this.getResumeModelProvider(),
+       threadId: request.sessionId
+     });
+@@ -33847,6 +33861,7 @@ var CodexAcpClient = class {
+       excludeTurns: true,
+       config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []),
+       cwd: request.cwd,
++      baseInstructions: paperclipBaseInstructions(request),
+       modelProvider: await this.getResumeModelProvider(),
+       threadId: request.sessionId
+     });
+@@ -33877,6 +33892,7 @@ var CodexAcpClient = class {
+     const response = await this.codexClient.threadStart({
+       config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers),
+       modelProvider: this.getModelProvider(),
++      baseInstructions: paperclipBaseInstructions(request),
+       cwd: request.cwd
+     });
+     const codexModels = await this.fetchAvailableModels();
+@@ -33981,6 +33997,13 @@ var CodexAcpClient = class {
+     });
+     const mergedConfig = {
+       ...forceGitRootTurnDiffPaths(mergeGatewayConfig(this.config, this.gatewayConfig)),
++      ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" ? {
++        "include_apps_instructions": false,
++        "features.apps": false,
++        "features.memory_tool": false,
++        "skills.include_instructions": true,
++        "mcp_servers": {}
++      } : {}),
+       projects: Object.fromEntries(sessionRoots.map((root) => [root, {
+         trust_level: "trusted"
+       }]))
+@@ -33994,7 +34017,7 @@ var CodexAcpClient = class {
+       server: mcp
+     }));
+     let serversToConfigure = requestedServers;
+-    if (shouldDeduplicateMcpConflicts()) {
++    if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && shouldDeduplicateMcpConflicts()) {
+       const existingNames = await this.getConfigMcpServerNames(projectPath);
+       serversToConfigure = requestedServers.filter((mcp) => !existingNames.has(mcp.name));
+     }
+@@ -34029,13 +34052,14 @@ var CodexAcpClient = class {
+     if (!cwd) {
+       return;
+     }
+-    const skillExtraRoots = additionalRoots.map((root) => path7.join(root, ".agents", "skills"));
++    const isolated = process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1";
++    const skillExtraRoots = isolated ? [] : additionalRoots.map((root) => path7.join(root, ".agents", "skills"));
+     if (!arraysEqual(this.skillExtraRoots, skillExtraRoots)) {
+       await this.codexClient.skillsExtraRootsSet({ extraRoots: skillExtraRoots });
+       this.skillExtraRoots = skillExtraRoots;
+     }
+     await this.codexClient.listSkills({
+-      cwds: [cwd, ...additionalRoots],
++      cwds: isolated ? [process.env.CODEX_HOME] : [cwd, ...additionalRoots],
+       forceReload: true
+     });
+   }
+@@ -34133,7 +34157,7 @@ var CodexAcpClient = class {
+       input: input2,
+       approvalPolicy: agentMode.approvalPolicy,
+       approvalsReviewer: agentMode.approvalsReviewer,
+-      sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(agentMode.sandboxPolicy, additionalDirectories),
++      sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(paperclipSandboxPolicy(agentMode.sandboxPolicy), additionalDirectories),
+       summary: disableSummary ? "none" : "auto",
+       effort,
+       model: modelId.model,
+@@ -37832,6 +37856,9 @@ var CodexAcpServer = class {
+               updatedGoal
+             );
+           }
++          if (this.sessionPublishIsCurrent(sessionState, sessionGeneration)) {
++            await this.publishCurrentGoal(sessionState, sessionGeneration, true);
++          }
+         } else if (methodRequest.params.action === "pause") {
+           const goal = await this.runWithProcessCheck(() => this.codexAcpClient.setGoalStatus(sessionState.sessionId, "paused"));
+           if (this.sessionPublishIsCurrent(sessionState, sessionGeneration)) {

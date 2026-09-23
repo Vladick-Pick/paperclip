@@ -8,6 +8,9 @@ import test from "node:test";
 const runnerPackage = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 );
+const localAdapterPackage = JSON.parse(
+  await readFile(new URL("../../adapters/codex-local/package.json", import.meta.url), "utf8"),
+);
 const rootPackage = JSON.parse(
   await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
 );
@@ -22,6 +25,13 @@ const acpxPatch = await readFile(
 const codexPatch = await readFile(
   new URL(
     "../../../patches/@agentclientprotocol__codex-acp@1.6.2.patch",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const localCodexPatch = await readFile(
+  new URL(
+    "../../../patches/@agentclientprotocol__codex-acp@1.13.1.patch",
     import.meta.url,
   ),
   "utf8",
@@ -72,6 +82,15 @@ test("the runner pins every qualified ACPX production dependency", () => {
     runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"],
     "0.73.0",
   );
+});
+
+test("the local Codex adapter pins its independent GPT-6-capable ACP lane", () => {
+  assert.equal(localAdapterPackage.dependencies["@agentclientprotocol/codex-acp"], "1.13.1");
+  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@1.13.1>@openai/codex"], "0.156.1");
+  assert.equal(rootPackage.pnpm.patchedDependencies["@agentclientprotocol/codex-acp@1.13.1"], "patches/@agentclientprotocol__codex-acp@1.13.1.patch");
+  assert.match(workspace, /codex-acp@1\.13\.1["']: patches\/@agentclientprotocol__codex-acp@1\.13\.1\.patch/);
+  assert.match(localCodexPatch, /PAPERCLIP_ACPX_ISOLATED_CONTEXT/);
+  assert.match(localCodexPatch, /!context\.isToolApproval && this\.shouldUseAcpElicitation\(params\)/);
 });
 
 test("the patched Codex ACP executable digest stays aligned across launch boundaries", async () => {
