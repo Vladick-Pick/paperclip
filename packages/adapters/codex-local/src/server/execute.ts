@@ -107,6 +107,7 @@ import {
   createCodexAcpExecutor,
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
+import { resolveCodexCliCommand } from "./codex-command.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeCodexAcp = createCodexAcpExecutor();
@@ -593,7 +594,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
       : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const command = asString(config.command, "codex");
   const model = asString(config.model, "");
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -626,6 +626,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
+  const command = resolveCodexCliCommand(config, adapterExecutionTargetIsRemote(executionTarget));
   const targetWorkspaceRealization = executionTarget?.workspaceRealization ?? null;
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;

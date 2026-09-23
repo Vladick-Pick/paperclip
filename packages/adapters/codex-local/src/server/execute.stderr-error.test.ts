@@ -165,6 +165,20 @@ describe("codex_local stderr fallback error derivation", () => {
 
     expect(result.errorMessage).toBe("Codex exited with code 1");
   });
+
+  it.skipIf(process.platform === "win32")("runs a local managed subscription with the bundled Codex CLI", async () => {
+    mockFailedProcess("Error: fixture failure");
+
+    await execute(buildContext({
+      engine: "cli",
+      managedAiConnection: { provider: "openai", method: "subscription" },
+      env: { CODEX_HOME: tempCodexHome, OPENAI_API_KEY: "" },
+    }) as never);
+
+    expect(runAdapterExecutionTargetProcess.mock.calls[0]?.[2]).toMatch(
+      /@openai[/\\]codex[/\\]bin[/\\]codex\.js$/,
+    );
+  });
 });
 
 describe("firstMeaningfulStderrLine", () => {

@@ -37,6 +37,7 @@ import {
 } from "./codex-auth-cache.js";
 import { resolveCodexExecutionEngineForRun, testCodexAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { resolveCodexCliCommand } from "./codex-command.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -271,9 +272,24 @@ export async function testEnvironment(
 
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "codex");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  let command: string;
+  try {
+    command = resolveCodexCliCommand(config, targetIsRemote);
+  } catch (err) {
+    return {
+      adapterType: "codex_local",
+      status: "fail",
+      checks: [{
+        code: "codex_command_unresolvable",
+        level: "error",
+        message: err instanceof Error ? err.message : "Bundled Codex CLI is unavailable",
+        hint: "Reinstall Paperclip dependencies so the Codex ACP package and its Codex CLI are present.",
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
@@ -341,7 +357,7 @@ export async function testEnvironment(
   }
 
   const configOpenAiKey = env.OPENAI_API_KEY;
-  const hostOpenAiKey = targetIsRemote ? undefined : process.env.OPENAI_API_KEY;
+  const hostOpenAiKey = targetIsRemote || config.managedAiConnection ? undefined : process.env.OPENAI_API_KEY;
   if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
     const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
     checks.push({
@@ -375,7 +391,7 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "codex_cwd_invalid" && check.code !== "codex_command_unresolvable");
   if (canRunProbe) {
-    if (!commandLooksLike(command, "codex")) {
+    if (!commandLooksLike(command, "codex") && !(config.managedAiConnection && !targetIsRemote && !isNonEmpty(config.command))) {
       checks.push({
         code: "codex_hello_probe_skipped_custom_command",
         level: "info",

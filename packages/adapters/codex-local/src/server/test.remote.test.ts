@@ -139,6 +139,32 @@ describe("codex remote environment diagnostics", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("uses the bundled Codex CLI for a local managed subscription probe", async () => {
+    const managedHome = await makeScratchDir("paperclip-managed-subscription-");
+    await fs.writeFile(path.join(managedHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-test" }));
+    vi.stubEnv("OPENAI_API_KEY", "sk-host-must-not-be-used");
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        engine: "cli",
+        model: "gpt-6-sol",
+        managedAiConnection: { provider: "openai", method: "subscription" },
+        env: { CODEX_HOME: managedHome, OPENAI_API_KEY: "" },
+      },
+      executionTarget: null,
+    });
+
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+    const probeCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[], { env: Record<string, string> }]
+      | undefined;
+    expect(probeCall?.[2]).toMatch(/@openai[/\\]codex[/\\]bin[/\\]codex\.js$/);
+    expect(probeCall?.[4]?.env.CODEX_HOME).toBe(managedHome);
+    expect(probeCall?.[4]?.env._PAPERCLIP_CODEX_AUTH_JSON).toBeUndefined();
+  });
+
   it("stages managed CODEX_HOME in an isolated runtime dir and keeps the probe cwd on the original remote workspace", async () => {
     const remoteTarget: AdapterExecutionTarget = {
       kind: "remote",
