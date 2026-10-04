@@ -1590,6 +1590,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={adapterType}
                 disabledTypes={adapterPickerDisabledTypes}
                 onChange={(t) => {
+                  if (t === adapterType) return;
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;

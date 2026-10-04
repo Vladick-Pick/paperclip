@@ -2,11 +2,19 @@ import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
+  it.each([null, "existing-session"])("keeps the sandbox for unconfigured legacy sessions (%s)", (resumeSessionId) => {
+    const { args } = buildCodexExecArgs({}, { resumeSessionId });
+    expect(args).toContain('sandbox_mode="workspace-write"');
+    expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    if (resumeSessionId) expect(args.slice(-3)).toEqual(["resume", resumeSessionId, "-"]);
+  });
+
   it.each([["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s, its supported reasoning effort, and fast mode", (model, effort) => {
     const result = buildCodexExecArgs({
       model,
       modelReasoningEffort: effort,
       fastMode: true,
+      dangerouslyBypassApprovalsAndSandbox: true,
     });
 
     expect(result.model).toBe(model);
@@ -15,10 +23,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       model,
       "-c",
@@ -49,6 +54,7 @@ describe("buildCodexExecArgs", () => {
       model: "gpt-5.4",
       search: true,
       fastMode: true,
+      dangerouslyBypassApprovalsAndSandbox: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
@@ -58,10 +64,7 @@ describe("buildCodexExecArgs", () => {
       "--search",
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.4",
       "-c",
@@ -76,6 +79,7 @@ describe("buildCodexExecArgs", () => {
     const result = buildCodexExecArgs({
       model: "gpt-5.5",
       fastMode: true,
+      dangerouslyBypassApprovalsAndSandbox: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
@@ -84,10 +88,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "-c",
@@ -102,6 +103,7 @@ describe("buildCodexExecArgs", () => {
     const result = buildCodexExecArgs({
       model: "future-codex-model",
       fastMode: true,
+      dangerouslyBypassApprovalsAndSandbox: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
@@ -110,10 +112,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "future-codex-model",
       "-c",
@@ -127,6 +126,7 @@ describe("buildCodexExecArgs", () => {
   it("enables Codex fast mode overrides when model is omitted (CLI default)", () => {
     const result = buildCodexExecArgs({
       fastMode: true,
+      dangerouslyBypassApprovalsAndSandbox: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
@@ -135,10 +135,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "-c",
       'service_tier="fast"',
       "-c",
@@ -151,6 +148,7 @@ describe("buildCodexExecArgs", () => {
     const result = buildCodexExecArgs({
       model: "gpt-5",
       fastMode: true,
+      dangerouslyBypassApprovalsAndSandbox: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
@@ -161,10 +159,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5",
       "-",
@@ -175,6 +170,7 @@ describe("buildCodexExecArgs", () => {
     const result = buildCodexExecArgs({
       model: "gpt-5.4-mini",
       fastMode: true,
+      dangerouslyBypassApprovalsAndSandbox: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
@@ -182,10 +178,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.4-mini",
       "-",
@@ -196,6 +189,7 @@ describe("buildCodexExecArgs", () => {
     const result = buildCodexExecArgs(
       {
         model: "gpt-5.5",
+        dangerouslyBypassApprovalsAndSandbox: true,
       },
       { skipGitRepoCheck: true },
     );
@@ -203,11 +197,8 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
       "--skip-git-repo-check",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "-",
@@ -219,6 +210,7 @@ describe("buildCodexExecArgs", () => {
       {
         model: "gpt-5.5",
         extraArgs: ["--skip-git-repo-check"],
+        dangerouslyBypassApprovalsAndSandbox: true,
       },
       { skipGitRepoCheck: true },
     );
@@ -227,10 +219,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "--skip-git-repo-check",

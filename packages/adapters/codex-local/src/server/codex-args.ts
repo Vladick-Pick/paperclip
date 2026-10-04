@@ -48,20 +48,18 @@ export function buildCodexExecArgs(
   const search = asBoolean(record.search, false);
   const fastModeRequested = asBoolean(record.fastMode, false);
   const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
-  const bypass = asBoolean(
-    record.dangerouslyBypassApprovalsAndSandbox,
-    asBoolean(record.dangerouslyBypassSandbox, false),
-  );
   const extraArgs = readExtraArgs(record);
-
-  const args = ["exec", "--json"];
-  // `codex exec` otherwise defaults to read-only/never, which cannot perform
-  // Paperclip work. Keep the sandbox, but make unattended workspace work and
-  // API calls possible. Explicit operator modes/profiles retain their meaning.
+  // Existing agents may have no stored bypass setting. Preserve their previous
+  // workspace-write sandbox on upgrade; new agents record the create default.
   const explicitSandbox = extraArgs.some((arg) =>
     /^(--sandbox(?:=|$)|-s|--profile(?:=|$)|-p|--full-auto$|--yolo$|--dangerously-bypass-approvals-and-sandbox$)/.test(arg)
     || /^(?:(?:--config=|-c=?)\s*)?(?:sandbox_mode|profile)\s*=/.test(arg),
   );
+  const bypass = asBoolean(
+    record.dangerouslyBypassApprovalsAndSandbox,
+    asBoolean(record.dangerouslyBypassSandbox, false),
+  );
+  const args = ["exec", "--json"];
   if (!bypass && !explicitSandbox) {
     args.push("-c", 'sandbox_mode="workspace-write"');
     args.push("-c", `sandbox_workspace_write.network_access=${options.networkAccess !== false}`);
