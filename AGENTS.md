@@ -124,7 +124,7 @@ For this NoHum project, "Paperclip updates" means the production deployment on
 - `.github/workflows/sync-paperclip-release.yml` in fork `master` performs the
   release import. It applies the incremental diff from the previously imported
   upstream commit and creates a linear fork commit, so upstream workflow history
-  never becomes reachable from the deploy branch. `.github/workflows/**` is
+  never becomes reachable from the deploy branch. `.github/**` is
   fork-owned policy and is excluded from every release import.
   `.paperclip-upstream-release` records the imported stable tag and upstream
   commit, which is the baseline for the next import. Do not add a privileged PAT
@@ -137,7 +137,10 @@ For this NoHum project, "Paperclip updates" means the production deployment on
   below 4 GiB free space; old releases are not deleted automatically.
 - A failed stable-release sync creates or updates the assigned GitHub issue
   `[Incident] Paperclip stable release sync failed`; the next successful sync
-  closes it. This is the durable incident record. Email delivery still depends
+  closes it. Repeated scheduled imports of the same conflicting release on the
+  same deploy SHA leave the incident open without failing again. A new release,
+  a changed deploy SHA, or manual dispatch retries the import. Transient failures
+  remain retryable. This is the durable incident record. Email delivery still depends
   on the repository owner's GitHub notification settings and is not a substitute
   for the issue. Use the workflow's `test_incident` dispatch input to test this
   path without importing or deploying release code.

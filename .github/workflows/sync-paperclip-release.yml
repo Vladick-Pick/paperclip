@@ -42,8 +42,11 @@ jobs:
           exit 1
 
       - name: Import latest official stable release
+        id: import_release
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RETRY_BLOCKED: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           git config user.name "paperclip-release-sync[bot]"
           git config user.email "paperclip-release-sync[bot]@users.noreply.github.com"
@@ -59,6 +62,19 @@ jobs:
           current_marker="$(cat .paperclip-upstream-release 2>/dev/null || true)"
           if [[ "$current_marker" == "$release_marker" ]]; then
             echo "Deployment branch already contains ${latest_tag}."
+            exit 0
+          fi
+
+          current_head="$(git rev-parse HEAD)"
+          blocked_marker="Blocked import: ${release_marker} on ${current_head}"
+          blocked_issue="$(
+            gh api --paginate "repos/${REPOSITORY}/issues?state=open&per_page=100" \
+              --jq ".[] | select(.pull_request == null and .user.login == \"github-actions[bot]\" and .title == \"[Incident] Paperclip stable release sync failed\" and ((.body // \"\") | contains(\"${blocked_marker}\"))) | .number" |
+              head -n 1
+          )"
+          if [[ -n "$blocked_issue" && "$RETRY_BLOCKED" != "true" ]]; then
+            echo "Unchanged release conflict remains tracked in issue #${blocked_issue}; manual dispatch retries it."
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -96,7 +112,7 @@ jobs:
           apply_status=0
           git diff --binary "$base_sha" "$latest_sha" -- \
             . \
-            ':(exclude).github/workflows/**' \
+            ':(exclude).github/**' \
             ':(exclude).paperclip-upstream-release' |
             git apply --3way --index --allow-empty || apply_status=$?
           if (( apply_status != 0 )); then
@@ -107,6 +123,7 @@ jobs:
             fi
             echo "Release import has code conflicts that require review:" >&2
             printf '%s\n' "$conflicts" >&2
+            echo "blocked_marker=${blocked_marker}" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -120,16 +137,16 @@ jobs:
             printf '%s\n' "$remaining_conflicts" >&2
             exit 1
           fi
-          if ! git diff --cached --quiet -- .github/workflows; then
-            echo "Release import still changes fork-owned workflows." >&2
+          if ! git diff --cached --quiet -- .github; then
+            echo "Release import still changes fork-owned GitHub policy." >&2
             exit 1
           fi
 
           git commit \
             -m "Import official Paperclip ${latest_tag}" \
             -m "Upstream commit: ${latest_sha}"
-          if ! git diff --quiet HEAD^1 HEAD -- .github/workflows; then
-            echo "Release commit changed fork-owned workflows." >&2
+          if ! git diff --quiet HEAD^1 HEAD -- .github; then
+            echo "Release commit changed fork-owned GitHub policy." >&2
             exit 1
           fi
           if git rev-parse --verify HEAD^2 >/dev/null 2>&1; then
@@ -149,16 +166,20 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BLOCKED_MARKER: ${{ steps.import_release.outputs.blocked_marker }}
         run: |
           incident_title="[Incident] Paperclip stable release sync failed"
           incident_body="The stable-release sync failed in ${RUN_URL}. The deployment branch and production server may be behind the latest official stable release."
+          if [[ -n "$BLOCKED_MARKER" ]]; then
+            incident_body+=$'\n\n'"${BLOCKED_MARKER}"
+          fi
           issue_number="$(
             gh api --paginate "repos/${REPOSITORY}/issues?state=open&per_page=100" \
-              --jq ".[] | select(.pull_request == null and .title == \"${incident_title}\") | .number" |
+              --jq ".[] | select(.pull_request == null and .user.login == \"github-actions[bot]\" and .title == \"${incident_title}\") | .number" |
               head -n 1
           )"
           if [[ -n "$issue_number" ]]; then
-            gh issue comment "$issue_number" --repo "$REPOSITORY" --body "$incident_body"
+            gh issue edit "$issue_number" --repo "$REPOSITORY" --body "$incident_body"
           else
             gh issue create \
               --repo "$REPOSITORY" \
@@ -168,7 +189,7 @@ jobs:
           fi
 
       - name: Resolve release sync incident
-        if: ${{ success() }}
+        if: ${{ success() && steps.import_release.outputs.blocked != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -177,7 +198,7 @@ jobs:
           incident_title="[Incident] Paperclip stable release sync failed"
           issue_number="$(
             gh api --paginate "repos/${REPOSITORY}/issues?state=open&per_page=100" \
-              --jq ".[] | select(.pull_request == null and .title == \"${incident_title}\") | .number" |
+              --jq ".[] | select(.pull_request == null and .user.login == \"github-actions[bot]\" and .title == \"${incident_title}\") | .number" |
               head -n 1
           )"
           if [[ -n "$issue_number" ]]; then
