@@ -533,7 +533,20 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
-  let sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  const backupSqlOptions = {
+    max: 1,
+    connect_timeout: connectTimeout,
+    types: {
+      date: {
+        to: 1184,
+        from: [1082, 1114, 1184],
+        serialize: (value: string | Date) => value instanceof Date ? value.toISOString() : value,
+        // JavaScript Date truncates PostgreSQL microseconds and shifts timezone-free timestamps.
+        parse: (value: string) => value === "NULL" ? null : value,
+      },
+    },
+  };
+  let sql = postgres(opts.connectionString, backupSqlOptions);
   let sqlClosed = false;
   const closeSql = async () => {
     if (sqlClosed) return;
@@ -571,7 +584,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           throw error;
         }
         effectiveBackupEngine = "javascript";
-        sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        sql = postgres(opts.connectionString, backupSqlOptions);
         sqlClosed = false;
       }
     }

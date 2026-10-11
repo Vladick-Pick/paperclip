@@ -75,6 +75,39 @@ describe("createBufferedTextFileWriter", () => {
 });
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  it.each(["javascript", "auto"] as const)("preserves PostgreSQL dates and microsecond timestamp precision with %s backups", async (backupEngine) => {
+    const sourceConnectionString = await createTempDatabase();
+    const restoreConnectionString = await createSiblingDatabase(sourceConnectionString, "paperclip_restore_precision");
+    const backupDir = createTempDir("paperclip-db-backup-precision-");
+    const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+    const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+    const previousPgDump = process.env.PAPERCLIP_PG_DUMP_PATH;
+    process.env.PAPERCLIP_PG_DUMP_PATH = path.join(backupDir, "missing-pg-dump");
+    try {
+      await sourceSql.unsafe(`
+        CREATE TABLE backup_test_precision (id integer, day date, local_time timestamp, instant timestamptz, times timestamptz[]);
+        INSERT INTO backup_test_precision VALUES
+          (1, '2026-10-11', '2026-10-11 11:12:13.123456', '2026-10-11 11:12:13.987654+03',
+            ARRAY['2026-10-11 11:12:13.987654+03'::timestamptz, NULL]),
+          (2, NULL, 'infinity', '-infinity', ARRAY[]::timestamptz[]);
+      `);
+      const before = await sourceSql.unsafe(`SELECT to_jsonb(t)::text AS row FROM backup_test_precision t ORDER BY id`);
+      const backup = await runDatabaseBackup({
+        connectionString: sourceConnectionString, backupDir,
+        filenamePrefix: "paperclip-precision", backupEngine,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      });
+      await runDatabaseRestore({ connectionString: restoreConnectionString, backupFile: backup.backupFile });
+      const after = await restoreSql.unsafe(`SELECT to_jsonb(t)::text AS row FROM backup_test_precision t ORDER BY id`);
+      expect(after).toEqual(before);
+    } finally {
+      if (previousPgDump === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+      else process.env.PAPERCLIP_PG_DUMP_PATH = previousPgDump;
+      await sourceSql.end();
+      await restoreSql.end();
+    }
+  }, 60_000);
+
   it(
     "keeps the newest backup for each retained calendar month",
     async () => {
