@@ -51,6 +51,8 @@ type SequenceDefinition = {
   maximum_value: string;
   increment: string;
   cycle_option: "YES" | "NO";
+  cache_size: string;
+  identity_generation: "ALWAYS" | "BY DEFAULT" | null;
   owner_schema: string | null;
   owner_table: string | null;
   owner_column: string | null;
@@ -634,26 +636,29 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     const allSequences = await sql<SequenceDefinition[]>`
       SELECT
-        s.sequence_schema,
-        s.sequence_name,
-        s.data_type,
-        s.start_value,
-        s.minimum_value,
-        s.maximum_value,
-        s.increment,
-        s.cycle_option,
+        n.nspname AS sequence_schema,
+        seq.relname AS sequence_name,
+        format_type(s.seqtypid, NULL) AS data_type,
+        s.seqstart::text AS start_value,
+        s.seqmin::text AS minimum_value,
+        s.seqmax::text AS maximum_value,
+        s.seqincrement::text AS increment,
+        CASE WHEN s.seqcycle THEN 'YES' ELSE 'NO' END AS cycle_option,
+        s.seqcache::text AS cache_size,
+        CASE attr.attidentity WHEN 'a' THEN 'ALWAYS' WHEN 'd' THEN 'BY DEFAULT' END AS identity_generation,
         tblns.nspname AS owner_schema,
         tbl.relname AS owner_table,
         attr.attname AS owner_column
-      FROM information_schema.sequences s
-      JOIN pg_class seq ON seq.relname = s.sequence_name
-      JOIN pg_namespace n ON n.oid = seq.relnamespace AND n.nspname = s.sequence_schema
-      LEFT JOIN pg_depend dep ON dep.objid = seq.oid AND dep.deptype = 'a'
+      FROM pg_sequence s
+      JOIN pg_class seq ON seq.oid = s.seqrelid
+      JOIN pg_namespace n ON n.oid = seq.relnamespace
+      LEFT JOIN pg_depend dep ON dep.objid = seq.oid AND dep.classid = 'pg_class'::regclass
+        AND dep.refclassid = 'pg_class'::regclass AND dep.deptype IN ('a', 'i')
       LEFT JOIN pg_class tbl ON tbl.oid = dep.refobjid
       LEFT JOIN pg_namespace tblns ON tblns.oid = tbl.relnamespace
       LEFT JOIN pg_attribute attr ON attr.attrelid = tbl.oid AND attr.attnum = dep.refobjsubid
-      WHERE ${sql.unsafe(nonSystemSchemaPredicate("s.sequence_schema"))}
-      ORDER BY s.sequence_schema, s.sequence_name
+      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+      ORDER BY n.nspname, seq.relname
     `;
     const sequences = allSequences.filter(
       (seq) => !seq.owner_table || includedTableNames.has(tableKey(seq.owner_schema ?? "public", seq.owner_table)),
@@ -695,13 +700,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    if (sequences.length > 0) {
+    const standaloneSequences = sequences.filter((seq) => seq.identity_generation === null);
+    if (standaloneSequences.length > 0) {
       emit("-- Sequences");
-      for (const seq of sequences) {
+      for (const seq of standaloneSequences) {
         const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
         emitStatement(`DROP SEQUENCE IF EXISTS ${qualifiedSequenceName} CASCADE;`);
         emitStatement(
-          `CREATE SEQUENCE ${qualifiedSequenceName} AS ${seq.data_type} INCREMENT BY ${seq.increment} MINVALUE ${seq.minimum_value} MAXVALUE ${seq.maximum_value} START WITH ${seq.start_value}${seq.cycle_option === "YES" ? " CYCLE" : " NO CYCLE"};`,
+          `CREATE SEQUENCE ${qualifiedSequenceName} AS ${seq.data_type} INCREMENT BY ${seq.increment} MINVALUE ${seq.minimum_value} MAXVALUE ${seq.maximum_value} START WITH ${seq.start_value} CACHE ${seq.cache_size}${seq.cycle_option === "YES" ? " CYCLE" : " NO CYCLE"};`,
         );
       }
       emit("");
@@ -755,7 +761,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         }
 
         let def = `  "${col.column_name}" ${typeStr}`;
-        if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
+        const identity = sequences.find((seq) => seq.identity_generation !== null
+          && seq.owner_schema === schema_name && seq.owner_table === tablename && seq.owner_column === col.column_name);
+        if (identity) {
+          def += ` GENERATED ${identity.identity_generation} AS IDENTITY (SEQUENCE NAME ${quoteQualifiedName(identity.sequence_schema, identity.sequence_name)} START WITH ${identity.start_value} INCREMENT BY ${identity.increment} MINVALUE ${identity.minimum_value} MAXVALUE ${identity.maximum_value} CACHE ${identity.cache_size}${identity.cycle_option === "YES" ? " CYCLE" : " NO CYCLE"})`;
+        } else if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
         if (col.is_nullable === "NO") def += " NOT NULL";
         colDefs.push(def);
       }
@@ -783,7 +793,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    const ownedSequences = sequences.filter((seq) => seq.owner_table && seq.owner_column);
+    const ownedSequences = standaloneSequences.filter((seq) => seq.owner_table && seq.owner_column);
     if (ownedSequences.length > 0) {
       emit("-- Sequence ownership");
       for (const seq of ownedSequences) {
@@ -971,12 +981,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         .unsafe(`SELECT * FROM ${qualifiedTableName}`)
         .values()
         .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
+      const overrideIdentity = sequences.some((seq) => seq.identity_generation !== null
+        && seq.owner_schema === schema_name && seq.owner_table === tablename) ? " OVERRIDING SYSTEM VALUE" : "";
       for await (const rows of rowCursor) {
         for (const row of rows) {
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
           );
-          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames})${overrideIdentity} VALUES (${values.join(", ")});`);
         }
         await writer.drain();
       }
