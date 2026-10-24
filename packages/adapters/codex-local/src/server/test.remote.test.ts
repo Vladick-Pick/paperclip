@@ -159,10 +159,11 @@ describe("codex remote environment diagnostics", () => {
 
     expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
     expect(result.checks.some((check) => check.code === "codex_cli_version_compatible")).toBe(true);
-    expect(runAdapterExecutionTargetProcess.mock.calls[0]?.[3]).toEqual(["--version"]);
-    const probeCall = runAdapterExecutionTargetProcess.mock.calls[1] as unknown as
-      | [string, unknown, string, string[], { env: Record<string, string> }]
-      | undefined;
+    const probeCalls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<
+      [string, unknown, string, string[], { env: Record<string, string> }]
+    >;
+    expect(probeCalls[0]?.[3]).toEqual(["--version"]);
+    const probeCall = probeCalls[1];
     expect(probeCall?.[2]).toMatch(/@openai[/\\]codex[/\\]bin[/\\]codex\.js$/);
     expect(probeCall?.[4]?.env.CODEX_HOME).toBe(managedHome);
     expect(probeCall?.[4]?.env._PAPERCLIP_CODEX_AUTH_JSON).toBeUndefined();
