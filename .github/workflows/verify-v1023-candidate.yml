@@ -1,0 +1,53 @@
+name: Verify v2026.1023.0 candidate
+on:
+  push:
+    branches: [codex/verify-v2026-1023-20261024]
+permissions:
+  contents: read
+jobs:
+  focused-verification:
+    if: github.repository == 'Vladick-Pick/paperclip' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CI: '1'
+      GOMEMLIMIT: 10GiB
+      GOMAXPROCS: '2'
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: 1135c88fe5145756ba5798e49f2e5867d42eafe9
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+          run_install: false
+          cache: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - name: Identity and frozen dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = 1135c88fe5145756ba5798e49f2e5867d42eafe9
+          test "$(cat .paperclip-upstream-release)" = 'v2026.1023.0 1b4c803816e82b0265c8422e1a804327a7ed8c54'
+          pnpm install --frozen-lockfile
+          node scripts/ensure-plugin-build-deps.mjs
+          pnpm --filter @paperclipai/paperclip-runner build:typescript
+      - name: Focused regressions
+        run: |
+          pnpm exec vitest run --maxWorkers=1 --hookTimeout=90000 packages/db/src/backup-lib.test.ts packages/adapters/codex-local/src/index.test.ts packages/adapters/codex-local/src/server/codex-args.test.ts packages/adapters/codex-local/src/server/test.remote.test.ts packages/adapters/codex-local/src/server/execute.remote.test.ts packages/adapters/codex-local/src/server/execute.stderr-error.test.ts server/src/__tests__/embedded-postgres-flags.test.ts server/src/__tests__/plugin-ui-static.test.ts server/src/__tests__/resource-lifecycle-events.test.ts server/src/__tests__/agent-permissions-routes.test.ts server/src/__tests__/tool-grant-scope.test.ts
+          node --test packages/paperclip-runner/test/acpx-codex-package-contract.test.mjs
+          pnpm --filter @paperclipai/db typecheck
+          pnpm --filter @paperclipai/adapter-codex-local typecheck
+      - name: Server typecheck
+        run: pnpm --filter @paperclipai/server exec tsc --noEmit --singleThreaded --extendedDiagnostics
+      - name: UI typecheck
+        run: pnpm --filter @paperclipai/ui typecheck
+      - name: UI token gates and clean source
+        run: |
+          pnpm check:token-gates
+          test -z "$(git status --porcelain)"
