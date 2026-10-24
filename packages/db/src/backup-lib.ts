@@ -6,6 +6,7 @@ import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
+import { randomUUID } from "node:crypto";
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -28,6 +29,8 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /** Optional durability gate. A rejected archive must not prune history. */
+  verifyBeforePrune?: (backupFile: string) => Promise<void>;
 };
 
 export type RunDatabaseBackupResult = {
@@ -43,6 +46,7 @@ export type RunDatabaseRestoreOptions = {
 };
 
 type SequenceDefinition = {
+  is_identity: boolean;
   sequence_schema: string;
   sequence_name: string;
   data_type: string;
@@ -52,7 +56,6 @@ type SequenceDefinition = {
   increment: string;
   cycle_option: "YES" | "NO";
   cache_size: string;
-  identity_generation: "ALWAYS" | "BY DEFAULT" | null;
   owner_schema: string | null;
   owner_table: string | null;
   owner_column: string | null;
@@ -556,13 +559,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
+  // Initial and final sleep checks can run within the same second. A failed
+  // second checkpoint must never overwrite the first verified recovery point.
+  const checkpointSuffix = opts.verifyBeforePrune ? `-${randomUUID()}` : "";
+  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}${checkpointSuffix}.sql`);
   const backupFile = `${sqlFile}.gz`;
   const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
+      let dumped = false;
       try {
         await closeSql();
         await runPgDumpBackup({
@@ -570,14 +577,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           connectTimeout,
         });
-        await writer.abort();
-        const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
-        return {
-          backupFile,
-          sizeBytes,
-          prunedCount,
-        };
+        dumped = true;
       } catch (error) {
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
@@ -588,6 +588,16 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         effectiveBackupEngine = "javascript";
         sql = postgres(opts.connectionString, backupSqlOptions);
         sqlClosed = false;
+      }
+      if (dumped) {
+        // Only an engine failure can select the JavaScript fallback. Once
+        // pg_dump succeeds, archive verification or persistence failures
+        // must retain their original error and must not reuse a closed writer.
+        await writer.abort();
+        const sizeBytes = statSync(backupFile).size;
+        await opts.verifyBeforePrune?.(backupFile);
+        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        return { backupFile, sizeBytes, prunedCount };
       }
     }
 
@@ -636,31 +646,51 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     const allSequences = await sql<SequenceDefinition[]>`
       SELECT
-        n.nspname AS sequence_schema,
-        seq.relname AS sequence_name,
-        format_type(s.seqtypid, NULL) AS data_type,
-        s.seqstart::text AS start_value,
-        s.seqmin::text AS minimum_value,
-        s.seqmax::text AS maximum_value,
-        s.seqincrement::text AS increment,
-        CASE WHEN s.seqcycle THEN 'YES' ELSE 'NO' END AS cycle_option,
-        s.seqcache::text AS cache_size,
-        CASE attr.attidentity WHEN 'a' THEN 'ALWAYS' WHEN 'd' THEN 'BY DEFAULT' END AS identity_generation,
+        false AS is_identity,
+        s.sequence_schema,
+        s.sequence_name,
+        s.data_type,
+        s.start_value,
+        s.minimum_value,
+        s.maximum_value,
+        s.increment,
+        s.cycle_option,
+        options.seqcache::text AS cache_size,
         tblns.nspname AS owner_schema,
         tbl.relname AS owner_table,
         attr.attname AS owner_column
-      FROM pg_sequence s
-      JOIN pg_class seq ON seq.oid = s.seqrelid
-      JOIN pg_namespace n ON n.oid = seq.relnamespace
-      LEFT JOIN pg_depend dep ON dep.objid = seq.oid AND dep.classid = 'pg_class'::regclass
-        AND dep.refclassid = 'pg_class'::regclass AND dep.deptype IN ('a', 'i')
+      FROM information_schema.sequences s
+      JOIN pg_class seq ON seq.relname = s.sequence_name
+      JOIN pg_namespace n ON n.oid = seq.relnamespace AND n.nspname = s.sequence_schema
+      JOIN pg_sequence options ON options.seqrelid = seq.oid
+      LEFT JOIN pg_depend dep ON dep.objid = seq.oid AND dep.deptype = 'a'
       LEFT JOIN pg_class tbl ON tbl.oid = dep.refobjid
       LEFT JOIN pg_namespace tblns ON tblns.oid = tbl.relnamespace
       LEFT JOIN pg_attribute attr ON attr.attrelid = tbl.oid AND attr.attnum = dep.refobjsubid
+      WHERE ${sql.unsafe(nonSystemSchemaPredicate("s.sequence_schema"))}
+      ORDER BY s.sequence_schema, s.sequence_name
+    `;
+    const identitySequences = await sql<SequenceDefinition[]>`
+      SELECT true AS is_identity, n.nspname AS sequence_schema, seq.relname AS sequence_name,
+             format_type(options.seqtypid, NULL) AS data_type,
+             options.seqstart::text AS start_value, options.seqmin::text AS minimum_value,
+             options.seqmax::text AS maximum_value, options.seqincrement::text AS increment,
+             CASE WHEN options.seqcycle THEN 'YES' ELSE 'NO' END AS cycle_option,
+             options.seqcache::text AS cache_size,
+             owner_namespace.nspname AS owner_schema, owner.relname AS owner_table,
+             attribute.attname AS owner_column
+      FROM pg_sequence options
+      JOIN pg_class seq ON seq.oid = options.seqrelid
+      JOIN pg_namespace n ON n.oid = seq.relnamespace
+      JOIN pg_depend dependency ON dependency.objid = seq.oid AND dependency.deptype = 'i'
+        AND dependency.classid = 'pg_class'::regclass AND dependency.refclassid = 'pg_class'::regclass
+      JOIN pg_class owner ON owner.oid = dependency.refobjid
+      JOIN pg_namespace owner_namespace ON owner_namespace.oid = owner.relnamespace
+      JOIN pg_attribute attribute ON attribute.attrelid = owner.oid AND attribute.attnum = dependency.refobjsubid
       WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
       ORDER BY n.nspname, seq.relname
     `;
-    const sequences = allSequences.filter(
+    const sequences = [...allSequences, ...identitySequences].filter(
       (seq) => !seq.owner_table || includedTableNames.has(tableKey(seq.owner_schema ?? "public", seq.owner_table)),
     );
 
@@ -700,10 +730,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    const standaloneSequences = sequences.filter((seq) => seq.identity_generation === null);
-    if (standaloneSequences.length > 0) {
+    if (sequences.length > 0) {
       emit("-- Sequences");
-      for (const seq of standaloneSequences) {
+      for (const seq of sequences.filter(seq => !seq.is_identity)) {
         const qualifiedSequenceName = quoteQualifiedName(seq.sequence_schema, seq.sequence_name);
         emitStatement(`DROP SEQUENCE IF EXISTS ${qualifiedSequenceName} CASCADE;`);
         emitStatement(
@@ -723,11 +752,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         udt_name: string;
         is_nullable: string;
         column_default: string | null;
+        is_identity: string;
+        identity_generation: "ALWAYS" | "BY DEFAULT" | null;
         character_maximum_length: number | null;
         numeric_precision: number | null;
         numeric_scale: number | null;
       }[]>`
-        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
+        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default, is_identity, identity_generation,
                character_maximum_length, numeric_precision, numeric_scale
         FROM information_schema.columns
         WHERE table_schema = ${schema_name} AND table_name = ${tablename}
@@ -761,10 +792,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         }
 
         let def = `  "${col.column_name}" ${typeStr}`;
-        const identity = sequences.find((seq) => seq.identity_generation !== null
-          && seq.owner_schema === schema_name && seq.owner_table === tablename && seq.owner_column === col.column_name);
-        if (identity) {
-          def += ` GENERATED ${identity.identity_generation} AS IDENTITY (SEQUENCE NAME ${quoteQualifiedName(identity.sequence_schema, identity.sequence_name)} START WITH ${identity.start_value} INCREMENT BY ${identity.increment} MINVALUE ${identity.minimum_value} MAXVALUE ${identity.maximum_value} CACHE ${identity.cache_size}${identity.cycle_option === "YES" ? " CYCLE" : " NO CYCLE"})`;
+        if (col.is_identity === "YES") {
+          const sequence = sequences.find(seq => seq.is_identity && seq.owner_schema === schema_name
+            && seq.owner_table === tablename && seq.owner_column === col.column_name);
+          if (!sequence || !col.identity_generation) throw new Error(`Missing identity sequence for ${schema_name}.${tablename}.${col.column_name}`);
+          def += ` GENERATED ${col.identity_generation} AS IDENTITY (SEQUENCE NAME ${quoteQualifiedName(sequence.sequence_schema, sequence.sequence_name)} START WITH ${sequence.start_value} INCREMENT BY ${sequence.increment} MINVALUE ${sequence.minimum_value} MAXVALUE ${sequence.maximum_value} CACHE ${sequence.cache_size} ${sequence.cycle_option === "YES" ? "CYCLE" : "NO CYCLE"})`;
         } else if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
         if (col.is_nullable === "NO") def += " NOT NULL";
         colDefs.push(def);
@@ -793,7 +825,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    const ownedSequences = standaloneSequences.filter((seq) => seq.owner_table && seq.owner_column);
+    const ownedSequences = sequences.filter((seq) => !seq.is_identity && seq.owner_table && seq.owner_column);
     if (ownedSequences.length > 0) {
       emit("-- Sequence ownership");
       for (const seq of ownedSequences) {
@@ -942,6 +974,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     for (const { schema_name, tablename } of tables) {
       const currentTableKey = tableKey(schema_name, tablename);
       const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
+      const overrideIdentity = identitySequences.some(seq => seq.owner_schema === schema_name && seq.owner_table === tablename);
       const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
       if (excludedTableNames.has(currentTableKey) || (count[0]?.n ?? 0) === 0) continue;
 
@@ -981,14 +1014,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         .unsafe(`SELECT * FROM ${qualifiedTableName}`)
         .values()
         .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
-      const overrideIdentity = sequences.some((seq) => seq.identity_generation !== null
-        && seq.owner_schema === schema_name && seq.owner_table === tablename) ? " OVERRIDING SYSTEM VALUE" : "";
       for await (const rows of rowCursor) {
         for (const row of rows) {
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
           );
-          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames})${overrideIdentity} VALUES (${values.join(", ")});`);
+          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames})${overrideIdentity ? " OVERRIDING SYSTEM VALUE" : ""} VALUES (${values.join(", ")});`);
         }
         await writer.drain();
       }
@@ -1052,6 +1083,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
+    await opts.verifyBeforePrune?.(backupFile);
     const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
