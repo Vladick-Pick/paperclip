@@ -143,6 +143,7 @@ describe("codex remote environment diagnostics", () => {
     const managedHome = await makeScratchDir("paperclip-managed-subscription-");
     await fs.writeFile(path.join(managedHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-test" }));
     vi.stubEnv("OPENAI_API_KEY", "sk-host-must-not-be-used");
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult("codex-cli 0.160.0\n"));
 
     const result = await testEnvironment({
       companyId: "company-1",
@@ -157,7 +158,9 @@ describe("codex remote environment diagnostics", () => {
     });
 
     expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
-    const probeCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+    expect(result.checks.some((check) => check.code === "codex_cli_version_compatible")).toBe(true);
+    expect(runAdapterExecutionTargetProcess.mock.calls[0]?.[3]).toEqual(["--version"]);
+    const probeCall = runAdapterExecutionTargetProcess.mock.calls[1] as unknown as
       | [string, unknown, string, string[], { env: Record<string, string> }]
       | undefined;
     expect(probeCall?.[2]).toMatch(/@openai[/\\]codex[/\\]bin[/\\]codex\.js$/);
