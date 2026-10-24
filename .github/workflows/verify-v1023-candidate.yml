@@ -18,7 +18,7 @@ jobs:
       - name: Checkout exact candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: 1c04c6b8e320e7875485b4e7aa702b7eaf8a1da4
+          ref: 2884e029efc62bfe14e1c60bb426716b235c05ba
           fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6
@@ -32,7 +32,7 @@ jobs:
           package-manager-cache: false
       - name: Identity and frozen dependencies
         run: |
-          test "$(git rev-parse HEAD)" = 1c04c6b8e320e7875485b4e7aa702b7eaf8a1da4
+          test "$(git rev-parse HEAD)" = 2884e029efc62bfe14e1c60bb426716b235c05ba
           test "$(cat .paperclip-upstream-release)" = 'v2026.1023.0 1b4c803816e82b0265c8422e1a804327a7ed8c54'
           pnpm install --frozen-lockfile
           node scripts/ensure-plugin-build-deps.mjs
@@ -43,6 +43,8 @@ jobs:
           node --test packages/paperclip-runner/test/acpx-codex-package-contract.test.mjs
           pnpm --filter @paperclipai/db typecheck
           pnpm --filter @paperclipai/adapter-codex-local typecheck
+      - name: Privacy and plugin lifecycle regressions
+        run: pnpm exec vitest run --maxWorkers=1 --hookTimeout=120000 server/src/__tests__/privacy-production-review.test.ts server/src/__tests__/plugin-tenant-isolation.test.ts server/src/__tests__/plugin-lifecycle-restart.test.ts
       - name: Server typecheck
         run: pnpm --filter @paperclipai/server exec tsc --noEmit --singleThreaded --extendedDiagnostics
       - name: UI typecheck
