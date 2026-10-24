@@ -1,0 +1,56 @@
+name: Verify v2026.1012.0 candidate
+
+on:
+  push:
+    branches:
+      - codex/verify-v2026-1012-20261024
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    if: github.repository == 'Vladick-Pick/paperclip' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CI: '1'
+      GOMEMLIMIT: 10GiB
+      GOMAXPROCS: '2'
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout exact prepared candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: bd92e23b568baced5fbf7b5a1e724363ec604001
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup pnpm without cache
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+          run_install: false
+          cache: false
+      - name: Setup matching Node.js without cache
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - name: Verify identity and available resources
+        run: |
+          test "$(git rev-parse HEAD)" = bd92e23b568baced5fbf7b5a1e724363ec604001
+          test "$(cat .paperclip-upstream-release)" = 'v2026.1012.0 bba6a45f0d364cfd962ac59b3bdf2426a8222adb'
+          free -h
+          df -h .
+      - name: Frozen dependency installation
+        run: pnpm install --frozen-lockfile
+      - name: Prepare declaration dependencies
+        run: |
+          node scripts/ensure-plugin-build-deps.mjs
+          pnpm --filter @paperclipai/paperclip-runner build:typescript
+      - name: Server typecheck
+        run: pnpm --filter @paperclipai/server exec tsc --noEmit --singleThreaded --extendedDiagnostics
+      - name: UI typecheck
+        run: pnpm --filter @paperclipai/ui typecheck
+      - name: Verify unchanged source
+        run: test -z "$(git status --porcelain)"
