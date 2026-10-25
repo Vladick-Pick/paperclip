@@ -8,10 +8,10 @@ Tool action approvals require `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to be set i
 
 ## Support Matrix
 
-| Transport | Local trusted | Hosted cloud / public authenticated | Notes |
-| --- | --- | --- | --- |
-| `remote_http` | Supported | Supported | Preferred production path. Paperclip proxies calls through the gateway with policy, audit, timeout, and redaction controls. |
-| `local_stdio` | Supported through approved templates and supervised runtime slots | Supported only when an explicitly trusted MCP runtime worker/host is configured | Set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` or `PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST` only for a worker that is allowed to supervise local processes. Do not enable arbitrary agent-supplied commands. |
+| Transport | Local trusted | Authenticated / private | Hosted cloud / public authenticated | Notes |
+| --- | --- | --- | --- | --- |
+| `remote_http` | Supported | Supported | Supported | Preferred production path. Paperclip proxies calls through the gateway with policy, audit, timeout, and redaction controls. |
+| `local_stdio` | Supported through approved templates and supervised runtime slots | Supported through approved templates and supervised runtime slots | Supported only when an explicitly trusted MCP runtime worker/host is configured | Private deployments do not require a trusted runtime host flag. Set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` or `PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST` in public deployments only for a worker that is allowed to supervise local processes. Do not enable arbitrary agent-supplied commands. |
 
 ## Native runtime gateway ownership
 

@@ -19072,6 +19072,34 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it.each([
+    ["local trusted", "local_trusted", "private", null, true],
+    ["authenticated private", "authenticated", "private", null, true],
+    ["authenticated public", "authenticated", "public", null, false],
+    ["trusted public worker", "authenticated", "public", "trusted-worker-1", true],
+  ] as const)(
+    "aligns local stdio health with the connection guard in %s",
+    async (_label, deploymentMode, deploymentExposure, trustedLocalStdioRuntimeHost, supported) => {
+      const company = await createCompany(db);
+      vi.stubEnv("PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST", "");
+      vi.stubEnv("PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST", "");
+      const service = createTestToolAccessService(db, { deploymentMode, deploymentExposure, trustedLocalStdioRuntimeHost });
+      expect((await service.getRuntimeHealth(company.id)).supportMatrix.localStdio.supported).toBe(supported);
+      const connection = service.createConnection(company.id, {
+        name: "Stdio capability check",
+        transport: "local_stdio",
+        config: { templateId: "paperclip.echo-calculator-time" },
+        enabled: true,
+        status: "active",
+      });
+      if (supported) {
+        await expect(connection).resolves.toMatchObject({ enabled: true, transport: "local_stdio" });
+      } else {
+        await expect(connection).rejects.toMatchObject({ status: 422, message: expect.stringContaining("cannot be enabled") });
+      }
+    },
+  );
+
   it("summarizes runtime health and flags stale slots plus degraded connections", async () => {
     const company = await createCompany(db);
     const generatedAt = new Date("2026-06-06T00:00:00.000Z");

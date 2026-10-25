@@ -5277,7 +5277,7 @@ export function toolAccessService(
     const deploymentMode = options.deploymentMode ?? "local_trusted";
     const deploymentExposure = options.deploymentExposure ?? "private";
     const localStdioSupported =
-      deploymentMode === "local_trusted" || Boolean(trustedRuntimeHost());
+      deploymentMode === "local_trusted" || deploymentExposure === "private" || Boolean(trustedRuntimeHost());
     return {
       status,
       generatedAt,
@@ -5291,7 +5291,7 @@ export function toolAccessService(
         localStdio: {
           supported: localStdioSupported,
           note: localStdioSupported
-            ? "local_stdio is available for local trusted mode or through the configured trusted MCP runtime host."
+            ? "local_stdio is available in local trusted or private deployments, or through the configured trusted MCP runtime host."
             : `local_stdio should stay disabled for ${deploymentMode}/${deploymentExposure}; use mcp_remote or configure a trusted runtime worker.`,
         },
       },
