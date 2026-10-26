@@ -17,6 +17,7 @@ import {
   connectionGrants,
   createDb,
   heartbeatRuns,
+  runIdentityContexts,
   issueThreadInteractions,
   issues,
   principalPermissionGrants,
@@ -58,6 +59,7 @@ import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool
 import { resolveConnectionGrantSecret } from "../services/connection-credentials.js";
 import { secretService } from "../services/secrets.js";
 import * as cogneeBridge from "../services/cognee-connection.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -1663,13 +1665,61 @@ rl.on("line", line => {
       const slots = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, local.connection.id));
       expect(slots).toHaveLength(2);
       await gateway.stopRuntimeSlot({ companyId: company.id, slotId: slots.find(s => s.slotKey.includes(run.id))!.id });
+      const [rate] = await db.insert(toolPolicies).values({ companyId: company.id, name: "One admitted stdio call", policyType: "rate_limit", selectors: { connectionId: local.connection.id }, config: { limit: 1, windowSeconds: 60 }, priority: 1 }).returning();
       expect(await call(session.token)).toMatchObject({ result: { content: "1" } });
+      await expect(call(session.token)).rejects.toMatchObject({ reasonCode: "rate_limited" });
+      await db.delete(toolPolicies).where(eq(toolPolicies.id, rate.id));
+      await db.insert(toolPolicies).values({ companyId: company.id, name: "Review stdio", policyType: "require_approval", selectors: { connectionId: local.connection.id }, priority: 1 });
+      await expect(call(session.token)).rejects.toMatchObject({ reasonCode: "approval_required" });
+      const [request] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+      await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByAgentId: agent.id, resolvedAt: new Date() }).where(eq(issueThreadInteractions.id, request.interactionId!));
+      expect(await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { message: "count" }, approvedActionRequestId: request.id })).toMatchObject({ result: { content: "2" } });
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { message: "automatic" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+      const automatic = (await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id))).find(row => row.id !== request.id)!;
+      await gateway.approveActionRequest({ companyId: company.id, actionRequestId: automatic.id, actor: { userId: "board-user" } });
+      expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, automatic.id))).toMatchObject([{ status: "executed" }]);
       await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, local.connection.id));
       await expect(call(session.token)).rejects.toThrow();
     } finally {
       for (const slot of await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, local.connection.id))) {
         await gateway.stopRuntimeSlot({ companyId: company.id, slotId: slot.id });
       }
+    }
+  });
+
+  it.each(["identity", "revoked session"])("fences queued stdio calls after %s changes", async (change) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await initializeRunIdentity(db, { companyId: company.id, agentId: agent.id, runId: run.id, responsibleUserId: "owner", cause: "queued" });
+    const local = await createLocalStdioMcpTool(db, company.id, {
+      connectionConfig: { stdioSessionMode: "run" },
+      stdioScript: `const rl = require("node:readline").createInterface({ input: process.stdin });
+rl.on("line", line => { const m = JSON.parse(line); const reply = result => process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result})+"\\n");
+if(m.method==="initialize") reply({protocolVersion:"2024-11-05",capabilities:{tools:{}},serverInfo:{name:"queue",version:"1"}});
+if(m.method==="tools/call") setTimeout(()=>reply({content:[{type:"text",text:"called"}]}), 600); });`,
+    });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+    await db.insert(toolProfileEntries).values({ companyId: company.id, profileId: profile.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: local.catalogEntry.id });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const [tool] = await gateway.listToolsForSession(session.token);
+    const first = gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { message: "first" } });
+    try {
+      await vi.waitFor(async () => expect(await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, local.connection.id))).toMatchObject([{ status: "running" }]));
+      const queued = gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { message: "queued" } }).catch(error => error);
+      await vi.waitFor(async () => expect(await db.select().from(toolInvocations).where(and(eq(toolInvocations.connectionId, local.connection.id), eq(toolInvocations.status, "executing")))).toHaveLength(2));
+      if (change === "identity") {
+        const [next] = await db.insert(runIdentityContexts).values({ companyId: company.id, runId: run.id, revision: 2, responsibleUserId: "other-owner", cause: "queued", correlationId: randomUUID() }).returning();
+        await db.update(heartbeatRuns).set({ activeIdentityContextId: next.id, responsibleUserId: "other-owner" }).where(eq(heartbeatRuns.id, run.id));
+      } else {
+        await db.update(toolGatewaySessions).set({ revokedAt: new Date() }).where(eq(toolGatewaySessions.id, session.id));
+      }
+      await first;
+      expect(await queued).toMatchObject({ reasonCode: change === "identity" ? "local_stdio_identity_changed" : "local_stdio_run_inactive" });
+    } finally {
+      await first.catch(() => undefined);
+      for (const slot of await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, local.connection.id))) await gateway.stopRuntimeSlot({ companyId: company.id, slotId: slot.id });
     }
   });
 

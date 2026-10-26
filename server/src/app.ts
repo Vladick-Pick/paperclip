@@ -178,6 +178,7 @@ import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { createToolGatewayService } from "./services/tool-gateway.js";
+import { shutdownRunStdioSessions } from "./services/run-stdio-session.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
@@ -1415,6 +1416,7 @@ export async function createApp(
       await agentLifecycle.stop();
       await publicMcpEvents?.stop();
       await dotMcpEvents?.stop();
+      await shutdownRunStdioSessions();
       jobCoordinator.stop();
       await deliveryWork.stop();
       unsubscribeChatPublicationSignals();

@@ -6395,6 +6395,7 @@ export function createToolGatewayService(
     tool: ToolGatewayDescriptor,
     parameters: unknown,
     ms: number,
+    invocationId: string,
     useProviderDefaultTimeout = false,
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedLocalStdioTool(
@@ -6422,17 +6423,27 @@ export function createToolGatewayService(
         },
       }, async (call) => {
         const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, session.runId!), eq(heartbeatRuns.companyId, session.companyId), eq(heartbeatRuns.agentId, session.agentId!))).limit(1);
-        const [auth] = session.gatewayTokenId
+        const [admission] = await db.select().from(toolInvocations).where(and(eq(toolInvocations.id, invocationId), eq(toolInvocations.companyId, session.companyId), eq(toolInvocations.runId, session.runId!), eq(toolInvocations.agentId, session.agentId!))).limit(1);
+        const approved = admission?.approvalState === "approved";
+        const [auth] = approved ? [null] : session.gatewayTokenId
           ? await db.select().from(toolMcpGatewayTokens).where(and(eq(toolMcpGatewayTokens.id, session.gatewayTokenId), eq(toolMcpGatewayTokens.companyId, session.companyId))).limit(1)
           : await db.select().from(toolGatewaySessions).where(and(eq(toolGatewaySessions.id, session.id), eq(toolGatewaySessions.companyId, session.companyId))).limit(1);
-        if (!run || !ACTIVE_GATEWAY_RUN_STATUSES.has(run.status) || !auth || auth.revokedAt || auth.expiresAt && auth.expiresAt.getTime() <= Date.now()) {
+        if (!run || !approved && !ACTIVE_GATEWAY_RUN_STATUSES.has(run.status) || !admission || admission.status !== "executing" || admission.toolName !== tool.name || !approved && (!auth || auth.revokedAt || auth.expiresAt && auth.expiresAt.getTime() <= Date.now())) {
           throw new ToolGatewayHttpError(401, "Stdio run authorization expired while queued", "local_stdio_run_inactive");
         }
-        const activeSession = await captureSessionIdentity(session);
-        const access = await policyService.decide(policyInputForTool({ session: activeSession, tool, parameters, consumeRateLimit: false }));
-        if (!access.allowed) throw new ToolGatewayHttpError(403, "Stdio access changed while queued", "local_stdio_access_revoked");
-        const current = await resolveConnectedLocalStdioTool(session, tool);
-        const currentGrant = await resolveConnectionGrant(session, current.connection);
+        if (approved) {
+          const [claim] = await db.select().from(toolActionRequests).where(and(eq(toolActionRequests.invocationId, admission.id), eq(toolActionRequests.companyId, session.companyId), eq(toolActionRequests.status, "executing"))).limit(1);
+          if (!claim) throw new ToolGatewayHttpError(409, "Stdio approval is no longer claimed", "action_not_approved");
+          await assertIssueOpenForApprovedAction({ claimed: claim, invocation: admission });
+        }
+        const activeSession = approved ? session : await captureSessionIdentity(session);
+        if (activeSession.identityContextId !== session.identityContextId || activeSession.responsibleUserId !== session.responsibleUserId) {
+          throw new ToolGatewayHttpError(409, "Stdio identity changed while queued; retry", "local_stdio_identity_changed");
+        }
+        const access = await policyService.decide(policyInputForTool({ session: activeSession, tool, parameters, consumeRateLimit: false }), { recheckAdmittedCall: true });
+        if (!access.allowed && !(approved && access.decision === "require_approval")) throw new ToolGatewayHttpError(403, "Stdio access changed while queued", "local_stdio_access_revoked");
+        const current = await resolveConnectedLocalStdioTool(activeSession, tool);
+        const currentGrant = await resolveConnectionGrant(activeSession, current.connection);
         const currentTemplate = await resolveLocalStdioRuntimeTemplate(current.connection);
         const currentEnv = await localStdioEnvironment(activeSession, current.connection, currentTemplate, currentGrant);
         if (currentGrant.id !== grant.id || JSON.stringify(currentTemplate) !== JSON.stringify(template) || JSON.stringify(current.connection.config) !== JSON.stringify(connection.config) || JSON.stringify(currentEnv) !== JSON.stringify(env)) {
@@ -7332,6 +7343,7 @@ export function createToolGatewayService(
                 args.tool,
                 args.parameters,
                 executionTimeoutMs,
+                args.invocationId,
                 args.timeoutMs === undefined,
               )
             : null;
@@ -8179,6 +8191,7 @@ export function createToolGatewayService(
                   tool,
                   parameters,
                   executionTimeoutMs,
+                  invocation.id,
                 )
               ).result
             : tool.providerType !== "paperclip_plugin"
@@ -10696,6 +10709,7 @@ export function createToolGatewayService(
                   tool,
                   effectiveParameters,
                   executionTimeoutMs,
+                  invocationId,
                   input.timeoutMs === undefined,
                 )
               : null;

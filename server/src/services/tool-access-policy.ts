@@ -1342,7 +1342,7 @@ export function toolAccessPolicyService(db: Db) {
    */
   async function decide(
     input: ToolAccessDecisionInput,
-    options: { cache?: ToolAccessDecisionCache } = {},
+    options: { cache?: ToolAccessDecisionCache; recheckAdmittedCall?: boolean } = {},
   ): Promise<ToolAccessDecision> {
     // A decision that consumes a rate limit can also record a trust-rule hit
     // from the policy row, so it always reads fresh rows.
@@ -1421,6 +1421,8 @@ export function toolAccessPolicyService(db: Db) {
             { redactionPlan: redaction.redactionPlan, policyExplanation },
           );
         }
+        // Queued dispatch rechecks an invocation whose admission already charged its rate limits.
+        if (options.recheckAdmittedCall) continue;
         const state = await enforceRateLimit(policy, ctx, input.consumeRateLimit === true);
         if (state?.limited) {
           return decision("rate_limited", "rate_limited", "Tool access rate limit exceeded.", effectiveProfileIds, [policy.id], { rateLimitState: state, redactionPlan: redaction.redactionPlan, policyExplanation });

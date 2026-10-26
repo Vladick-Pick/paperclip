@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 
 export const RUN_STDIO_IDLE_TTL_MS = 120_000;
@@ -16,6 +16,13 @@ type Entry = {
 };
 // Keys contain company, connection, agent, run and grant identity; never share a browser between runs.
 const sessions = new Map<string, Entry>();
+let shutdown: Promise<void> | null = null;
+
+export function shutdownRunStdioSessions(): Promise<void> {
+  shutdown ??= Promise.all([...sessions.keys()].map(key => stopRunStdioSession(key, async () => undefined)))
+    .then(() => undefined).finally(() => { shutdown = null; });
+  return shutdown;
+}
 
 export function hasRunStdioSession(key: string) {
   return sessions.has(key);
@@ -53,6 +60,7 @@ export async function useRunStdioSession<T>(input: {
   timeoutMs: number;
   onIdle: () => Promise<unknown>;
 }, use: (call: (params: CallToolRequest["params"]) => Promise<unknown>) => Promise<T>): Promise<T> {
+  if (shutdown) throw new Error("Local stdio sessions are shutting down");
   const fingerprint = createHash("sha256").update(JSON.stringify([input.command, input.args, input.env])).digest("hex");
   let entry = sessions.get(input.key);
   if (entry && entry.fingerprint !== fingerprint) {
@@ -79,6 +87,8 @@ export async function useRunStdioSession<T>(input: {
     return await use(async (params) => {
       if (!current.client) {
         const env = Object.fromEntries(Object.entries(input.env).filter((pair): pair is [string, string] => typeof pair[1] === "string"));
+        // The SDK merges inherited defaults; undefined overrides omit them at spawn.
+        for (const key of Object.keys(getDefaultEnvironment())) if (!(key in env)) Reflect.set(env, key, undefined);
         const transport = new StdioClientTransport({ command: input.command, args: input.args, env, stderr: "pipe" });
         // Drain provider stderr without logging credentials or page contents.
         transport.stderr?.on("data", () => undefined);
