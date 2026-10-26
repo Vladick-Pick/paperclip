@@ -1633,6 +1633,46 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     });
   });
 
+  it("preserves opted-in stdio state within a run and isolates other runs", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { run: otherRun } = await createIssueAndRun(db, company.id, agent.id);
+    const local = await createLocalStdioMcpTool(db, company.id, {
+      connectionConfig: { stdioSessionMode: "run" },
+      stdioScript: `
+const rl = require("node:readline").createInterface({ input: process.stdin });
+let count = 0;
+rl.on("line", line => {
+  const m = JSON.parse(line);
+  if (m.method === "initialize") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "counter", version: "1" } } }) + "\\n");
+  if (m.method === "tools/call") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: String(++count) }] } }) + "\\n");
+});`,
+    });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+    await db.insert(toolProfileEntries).values({ companyId: company.id, profileId: profile.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: local.catalogEntry.id });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const other = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: otherRun.id });
+    const [tool] = await gateway.listToolsForSession(session.token);
+    const call = (token: string) => gateway.executeTool({ sessionToken: token, tool: tool.name, parameters: { message: "count" } });
+    try {
+      expect(await call(session.token)).toMatchObject({ result: { content: "1" } });
+      expect(await call(session.token)).toMatchObject({ result: { content: "2" } });
+      expect(await call(other.token)).toMatchObject({ result: { content: "1" } });
+      const slots = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, local.connection.id));
+      expect(slots).toHaveLength(2);
+      await gateway.stopRuntimeSlot({ companyId: company.id, slotId: slots.find(s => s.slotKey.includes(run.id))!.id });
+      expect(await call(session.token)).toMatchObject({ result: { content: "1" } });
+      await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, local.connection.id));
+      await expect(call(session.token)).rejects.toThrow();
+    } finally {
+      for (const slot of await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, local.connection.id))) {
+        await gateway.stopRuntimeSlot({ companyId: company.id, slotId: slot.id });
+      }
+    }
+  });
+
   it("passes only approved env values to local stdio MCP processes", async () => {
     const previousDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = "postgres://server-secret.example/paperclip";

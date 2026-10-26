@@ -194,11 +194,19 @@ async function handleMcpGatewayProtocol(
       const contentText = typeof resultRecord?.content === "string"
         ? resultRecord.content
         : JSON.stringify(resultRecord?.data ?? result.result ?? null);
+      const data = resultRecord?.data as Record<string, unknown> | undefined;
+      const images = (data?.transport === "local_stdio" || data?.transport === "mcp_http") && Array.isArray(data.content)
+        ? data.content.filter((item: unknown) => {
+          const block = item as Record<string, unknown> | null;
+          return block?.type === "image" && typeof block.mimeType === "string" && /^image\/(png|jpeg|gif|webp)$/.test(block.mimeType)
+            && typeof block.data === "string" && block.data.length <= 8 * 1024 * 1024 && /^[A-Za-z0-9+/]+={0,2}$/.test(block.data);
+        }).map((item: Record<string, unknown>) => ({ type: "image", mimeType: item.mimeType, data: item.data }))
+        : [];
       res.json({
         jsonrpc: "2.0",
         id,
         result: {
-          content: [{ type: "text", text: contentText }],
+          content: [{ type: "text", text: contentText }, ...images],
           structuredContent: resultRecord?.data ?? null,
           isError: false,
         },

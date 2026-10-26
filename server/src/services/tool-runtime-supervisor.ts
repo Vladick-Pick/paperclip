@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { toolAccessAuditEvents, toolRuntimeSlots } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode, ToolRuntimeSlotStatus } from "@paperclipai/shared";
 import { logActivity } from "./activity-log.js";
+import { hasRunStdioSession, stopRunStdioSession } from "./run-stdio-session.js";
 
 const ACTIVE_SLOT_STATUSES: ToolRuntimeSlotStatus[] = ["starting", "running", "idle"];
 const DEFAULT_IDLE_TTL_MS = 1_000;
@@ -228,6 +229,8 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
     const at = now();
     for (const row of rows) {
       if (row.status !== "idle" && row.status !== "running") continue;
+      // Stateful children own their idle timer; do not race an active/queued call.
+      if (hasRunStdioSession(row.slotKey)) continue;
       const idleDeadline = row.idleDeadlineAt ?? row.idleExpiresAt;
       if (!idleDeadline || idleDeadline.getTime() > at.getTime()) continue;
       const metadata = {
@@ -603,9 +606,9 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
     return startSlot(row, { ...input, reason: row.status === "stopped" ? "lazy_start" : "restart_after_failure" });
   }
 
-  async function idleSlot(row: typeof toolRuntimeSlots.$inferSelect, metadata: Record<string, unknown>) {
+  async function idleSlot(row: typeof toolRuntimeSlots.$inferSelect, metadata: Record<string, unknown>, ttlMs = idleTtlMs) {
     const at = now();
-    const idleDeadline = new Date(at.getTime() + idleTtlMs);
+    const idleDeadline = new Date(at.getTime() + ttlMs);
     const [updated] = await db
       .update(toolRuntimeSlots)
       .set({
@@ -620,7 +623,7 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
           hostId,
           useCount: numberValue(metadata.useCount) + 1,
           lastIdleAt: at.toISOString(),
-          idleTtlMs,
+          idleTtlMs: ttlMs,
         },
         updatedAt: at,
       })
@@ -641,6 +644,7 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
         agentId?: string | null;
         commandTemplateKey?: string | null;
         metadata?: Record<string, unknown>;
+        idleTtlMs?: number;
       },
       fn: (handle: RuntimeSlotHandle) => Promise<T>,
     ): Promise<T> {
@@ -661,7 +665,7 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
       };
       try {
         const result = await fn(handle);
-        await idleSlot(row, metadata);
+        await idleSlot(row, metadata, input.idleTtlMs);
         return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -788,6 +792,7 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
           { slotId: row.id, runtimeKind: row.runtimeKind },
         );
       }
+      return stopRunStdioSession(row.slotKey, async () => {
       const at = now();
       const [stopped] = await db
         .update(toolRuntimeSlots)
@@ -826,6 +831,7 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
         details: { slotKey: row.slotKey, reason: input.reason ?? "explicit_stop" },
       });
       return slotView(stopped);
+      });
     },
 
     async restartSlot(input: {
@@ -851,6 +857,7 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
           { slotId: row.id, runtimeKind: row.runtimeKind },
         );
       }
+      return stopRunStdioSession(row.slotKey, async () => {
       const at = now();
       const [stoppedRow] = await db
         .update(toolRuntimeSlots)
@@ -882,6 +889,7 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
       });
       const started = await startSlot(stoppedRow, { ...input, reason: "explicit_restart" });
       return slotView(started);
+      });
     },
   };
 }

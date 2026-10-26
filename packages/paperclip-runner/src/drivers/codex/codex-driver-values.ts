@@ -265,13 +265,26 @@ export function codexSemanticToolSpecs(): readonly Readonly<
 }
 
 export function dynamicToolResponse(value: unknown): Record<string, unknown> {
+  const result = record(value);
+  const data = record(result.data);
+  const images = (data.transport === "local_stdio" || data.transport === "mcp_http") && Array.isArray(data.content)
+    ? data.content.filter((item: unknown) => {
+      const block = record(item);
+      return block.type === "image" && typeof block.mimeType === "string" && /^image\/(png|jpeg|gif|webp)$/.test(block.mimeType)
+        && typeof block.data === "string" && block.data.length <= 8 * 1024 * 1024 && /^[A-Za-z0-9+/]+={0,2}$/.test(block.data);
+    }) as Array<{ mimeType: string; data: string }>
+    : [];
+  const textValue = images.length > 0
+    ? { ...result, data: { ...data, content: (data.content as unknown[]).filter(item => !images.includes(item as typeof images[number])) } }
+    : value;
   return {
     success: true,
     contentItems: [
       {
         type: "inputText",
-        text: typeof value === "string" ? value : JSON.stringify(value),
+        text: typeof textValue === "string" ? textValue : JSON.stringify(textValue),
       },
+      ...images.map(image => ({ type: "inputImage", imageUrl: `data:${image.mimeType};base64,${image.data}` })),
     ],
   };
 }

@@ -20,6 +20,7 @@ import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
+import { RUN_STDIO_IDLE_TTL_MS, useRunStdioSession } from "./run-stdio-session.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -5897,6 +5898,7 @@ export function createToolGatewayService(
             throw malformedRemoteMcpResponse();
           return record.text;
         }
+        if (record.type === "image") return `[MCP image: ${String(record.mimeType ?? "unknown")}]`;
         return JSON.stringify(record);
       })
       .join("\n");
@@ -6407,6 +6409,48 @@ export function createToolGatewayService(
       template,
       grant,
     );
+    if (connection.config.stdioSessionMode === "run" && template.templateId !== "paperclip.cognee-cloud") {
+      if (!session.runId || !session.agentId || !template.command) {
+        throw new ToolGatewayHttpError(422, "Stateful stdio requires an agent run and an approved executable", "local_stdio_run_required");
+      }
+      const connectionKey = `mcp:${session.companyId}:${connection.id}:${session.agentId}:${session.runId}:${grant.id}`;
+      let slotId: string | undefined;
+      const result = await useRunStdioSession({
+        companyId: session.companyId, key: connectionKey, command: template.command, args: template.args, env, timeoutMs: ms,
+        onIdle: async () => {
+          if (slotId) await runtimeSupervisor.stopSlot({ companyId: session.companyId, slotId, reason: "idle_ttl_expired" });
+        },
+      }, async (call) => {
+        const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, session.runId!), eq(heartbeatRuns.companyId, session.companyId), eq(heartbeatRuns.agentId, session.agentId!))).limit(1);
+        const [auth] = session.gatewayTokenId
+          ? await db.select().from(toolMcpGatewayTokens).where(and(eq(toolMcpGatewayTokens.id, session.gatewayTokenId), eq(toolMcpGatewayTokens.companyId, session.companyId))).limit(1)
+          : await db.select().from(toolGatewaySessions).where(and(eq(toolGatewaySessions.id, session.id), eq(toolGatewaySessions.companyId, session.companyId))).limit(1);
+        if (!run || !ACTIVE_GATEWAY_RUN_STATUSES.has(run.status) || !auth || auth.revokedAt || auth.expiresAt && auth.expiresAt.getTime() <= Date.now()) {
+          throw new ToolGatewayHttpError(401, "Stdio run authorization expired while queued", "local_stdio_run_inactive");
+        }
+        const activeSession = await captureSessionIdentity(session);
+        const access = await policyService.decide(policyInputForTool({ session: activeSession, tool, parameters, consumeRateLimit: false }));
+        if (!access.allowed) throw new ToolGatewayHttpError(403, "Stdio access changed while queued", "local_stdio_access_revoked");
+        const current = await resolveConnectedLocalStdioTool(session, tool);
+        const currentGrant = await resolveConnectionGrant(session, current.connection);
+        const currentTemplate = await resolveLocalStdioRuntimeTemplate(current.connection);
+        const currentEnv = await localStdioEnvironment(activeSession, current.connection, currentTemplate, currentGrant);
+        if (currentGrant.id !== grant.id || JSON.stringify(currentTemplate) !== JSON.stringify(template) || JSON.stringify(current.connection.config) !== JSON.stringify(connection.config) || JSON.stringify(currentEnv) !== JSON.stringify(env)) {
+          throw new ToolGatewayHttpError(409, "Stdio configuration changed while queued; retry", "local_stdio_configuration_changed");
+        }
+        return runtimeSupervisor.useConnectionSlot({
+          companyId: session.companyId, applicationId: tool.applicationId ?? null, connectionId: connection.id,
+          connectionKey, runId: session.runId, issueId: session.issueId, agentId: session.agentId,
+          commandTemplateKey: template.templateId, idleTtlMs: RUN_STDIO_IDLE_TTL_MS,
+          metadata: { statefulStdio: true, connectionId: connection.id },
+        }, async (handle) => {
+          slotId = handle.slot.id;
+          handle.appendLog("stdout", `calling ${entry.toolName}`);
+          return call({ name: entry.toolName, arguments: asRecord(parameters) ?? {} });
+        });
+      });
+      return { result: normalizeMcpToolResult(result, "local_stdio", true) };
+    }
     const invoke = () => callLocalStdioMcp({ connection, entry, template, env, parameters,
       timeoutMs: useProviderDefaultTimeout && template.templateId === "paperclip.cognee-cloud" ? 60_000 : ms });
     // Cognee is a bundled HTTP client. Provider failures are tool failures, not

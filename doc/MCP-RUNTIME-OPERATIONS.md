@@ -15,6 +15,8 @@ Tool action approvals require `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to be set i
 
 ## Native runtime gateway ownership
 
+Approved local stdio connections can opt into `config.stdioSessionMode: "run"` for stateful tools such as browsers. The default remains one process per call. Opted-in processes are isolated by company, connection, agent, run and selected grant; calls in one process are serialized and reauthorized after queuing. They close after two idle minutes, on tool failure, or on operator stop/restart. Live process reservations are capped at four per company and sixteen per host in addition to the supervisor's configured limits. MCP HTTP and native Codex responses preserve validated image blocks. Other native providers' image rendering is not covered by this browser rollout.
+
 Paperclip Runner creates an immutable MCP assignment for one agent. Its gateway
 stores the owner in `agentId` and the agent context scope. Authentication checks
 that the run belongs to that owner and that the gateway and profile metadata
