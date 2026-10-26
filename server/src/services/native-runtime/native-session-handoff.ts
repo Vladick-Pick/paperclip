@@ -67,8 +67,12 @@ export async function buildNativeSessionHandoff(input: {
   if (input.throughCommentId && !cutoff) return null;
   const afterBoundary = (date: typeof issueComments.createdAt | typeof issueThreadInteractions.createdAt | typeof heartbeatRuns.createdAt | typeof issueDocuments.createdAt) =>
     boundary ? sql`${date} > ${boundary.createdAt.toISOString()}::timestamptz` : undefined;
-  const excerpt = (body: SQL) => sql<string>`case when length(${body}) > ${ENTRY_MAX_CHARS}
-    then left(${body}, 2900) || ${"\n[content omitted]\n"} || right(${body}, 900) else ${body} end`;
+  // SQL_ASCII can split UTF-8 bytes; transport bounded previews as ASCII before decoding.
+  const databaseText = (body: SQL) => sql<string>`encode(convert_to(${body},
+    case current_setting('server_encoding') when 'SQL_ASCII' then 'SQL_ASCII' else 'UTF8' end), 'base64')`
+    .mapWith((value: string) => Buffer.from(value, "base64").toString("utf8"));
+  const excerpt = (body: SQL) => databaseText(sql`case when length(${body}) > ${ENTRY_MAX_CHARS}
+    then left(${body}, 2900) || ${"\n[content omitted]\n"} || right(${body}, 900) else ${body} end`);
   const commentFields = {
     id: issueComments.id, body: excerpt(sql`${issueComments.body}`),
     truncated: sql<boolean>`length(${issueComments.body}) > ${ENTRY_MAX_CHARS}`,
@@ -92,7 +96,7 @@ export async function buildNativeSessionHandoff(input: {
     // Only conversational summaries are history. Never replay a toolAction,
     // connection authorization payload, credentials, or approval as live authority.
     db.select({ id: issueThreadInteractions.id, kind: issueThreadInteractions.kind, status: issueThreadInteractions.status,
-      title: sql<string>`left(coalesce(${issueThreadInteractions.title}, ''), 256)`,
+      title: databaseText(sql`left(coalesce(${issueThreadInteractions.title}, ''), 256)`),
       body: excerpt(sql`coalesce(${issueThreadInteractions.result}->>'summaryMarkdown', ${issueThreadInteractions.summary}, '')`),
       truncated: sql<boolean>`length(coalesce(${issueThreadInteractions.result}->>'summaryMarkdown', ${issueThreadInteractions.summary}, '')) > ${ENTRY_MAX_CHARS}`,
     }).from(issueThreadInteractions).where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
