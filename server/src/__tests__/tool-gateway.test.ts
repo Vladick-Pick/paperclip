@@ -1691,6 +1691,7 @@ rl.on("line", line => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await createActiveMember(db, company.id, "owner");
     await initializeRunIdentity(db, { companyId: company.id, agentId: agent.id, runId: run.id, responsibleUserId: "owner", cause: "queued" });
     const local = await createLocalStdioMcpTool(db, company.id, {
       connectionConfig: { stdioSessionMode: "run" },
