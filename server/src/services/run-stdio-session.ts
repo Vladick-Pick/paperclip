@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
+import { logger } from "../middleware/logger.js";
 
 export const RUN_STDIO_IDLE_TTL_MS = 120_000;
 
@@ -19,8 +20,10 @@ const sessions = new Map<string, Entry>();
 let shutdown: Promise<void> | null = null;
 
 export function shutdownRunStdioSessions(): Promise<void> {
-  shutdown ??= Promise.all([...sessions.keys()].map(key => stopRunStdioSession(key, async () => undefined)))
-    .then(() => undefined).finally(() => { shutdown = null; });
+  shutdown ??= Promise.allSettled([...sessions.keys()].map(key => stopRunStdioSession(key, async () => undefined)))
+    .then(results => {
+      if (results.some(result => result.status === "rejected")) logger.warn("Some local stdio clients did not close cleanly during shutdown");
+    }).finally(() => { shutdown = null; });
   return shutdown;
 }
 
