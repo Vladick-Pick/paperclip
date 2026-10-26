@@ -138,6 +138,29 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect((await stat(path.join(home, ".credentials.json"))).mode & 0o777).toBe(0o600);
   });
 
+  it("keeps the Claude sign-in URL on one terminal row for strict prompt parsing", async () => {
+    const query = "?code=true&client_id=" + "a".repeat(36) + "&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=" + "A".repeat(43) + "&code_challenge_method=S256&state=" + "B".repeat(43);
+    const url = `https://claude.ai/oauth/authorize${query}`;
+    const home = await fakeCli("claude", [
+      "python3 - <<'PY'",
+      "import os",
+      `url = ${JSON.stringify(url)}`,
+      "width = os.get_terminal_size().columns or 80",
+      "print('Browser did not open? Use the url below to sign in (c to copy)', flush=True)",
+      "print('\\n'.join(url[i:i+width] for i in range(0, len(url), width)), flush=True)",
+      "print('Paste code here if prompted >', flush=True)",
+      "PY",
+      "sleep 60",
+    ].join("\n"));
+    const login = startLocalBrowserLogin("anthropic", home);
+    try {
+      await vi.waitFor(() => expect(login.authorizationUrl).toBe(url), { timeout: 2000 });
+    } finally {
+      login.abort();
+      await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
+    }
+  }, 10_000);
+
   it("terminates the local provider process when sign-in is cancelled", async () => {
     const home = await fakeCli("codex", 'echo $$ > "$CODEX_HOME/login.pid"\nexec sleep 60');
     const login = startLocalBrowserLogin("openai", home);
