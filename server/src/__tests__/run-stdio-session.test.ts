@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { hasRunStdioSession, RUN_STDIO_IDLE_TTL_MS, shutdownRunStdioSessions, stopRunStdioSession, useRunStdioSession } from "../services/run-stdio-session.js";
 
 const keys = new Set<string>();
@@ -64,6 +65,14 @@ it("keeps the explicit environment allowlist in run mode", async () => {
 });
 
 it("operator stop fences queued calls and shutdown drains active ownership", async () => {
+  await count("close-failure");
+  const close = Client.prototype.close;
+  let failedCloseFinished = false;
+  vi.spyOn(Client.prototype, "close").mockImplementationOnce(async function (this: Client) {
+    await close.call(this);
+    failedCloseFinished = true;
+    throw new Error("Fixture close failure");
+  });
   let release!: () => void;
   let entered!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
@@ -72,6 +81,7 @@ it("operator stop fences queued calls and shutdown drains active ownership", asy
   await started;
   const queued = count("queued").catch(error => error);
   const stopping = shutdownRunStdioSessions();
+  await vi.waitFor(() => expect(failedCloseFinished).toBe(true));
   await expect(count("new-during-shutdown")).rejects.toThrow("shutting down");
   release();
   expect(await first).toMatchObject({ content: [{ text: "1" }] });
