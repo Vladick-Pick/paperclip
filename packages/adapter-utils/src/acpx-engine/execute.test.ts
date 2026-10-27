@@ -563,18 +563,31 @@ describe("shared ACPX engine runtime behavior", () => {
     );
   });
 
-  it("keeps identity and scoped API access without exposing configured service tokens to Codex shells", async () => {
-    const { meta } = await runExecutor({ agent: "codex", env: { MY_SERVICE_TOKEN: "assigned-tool-token" } }, {
+  it.each([false, true])("keeps identity and GitHub broker access without exposing other tokens to Codex shells (bridge: %s)", async (withBridge) => {
+    const root = await makeTempRoot();
+    const { meta } = await runExecutor({ agent: "codex", cwd: root, stateDir: path.join(root, "state"), env: {
+      CODEX_HOME: path.join(root, "codex-home"), MY_SERVICE_TOKEN: "assigned-tool-token",
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "scoped-github-capability",
+      PAPERCLIP_GITHUB_BROKER_URL: "http://127.0.0.1:3100",
+      ...(withBridge ? { PAPERCLIP_GITHUB_BRIDGE_TOKEN: "scoped-github-bridge" } : {}),
+      OPENAI_API_KEY: "provider-key-canary", CODEX_API_KEY: "codex-key-canary",
+      GITHUB_TOKEN: "github-pat-canary", PAPERCLIP_GITHUB_OTHER_TOKEN: "other-token-canary",
+    } }, {
       authToken: "assigned-run-token",
       agentIdentity: { keyId: "sha256:test", publicKeyPem: "public", privateKeyPem: "private" },
     });
     const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG));
     expect(config.shell_environment_policy.include_only).toEqual(expect.arrayContaining([
-      "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+      "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY", "PAPERCLIP_GITHUB_BROKER_TOKEN", "PAPERCLIP_GITHUB_BROKER_URL",
     ]));
+    expect(config.shell_environment_policy.include_only.includes("PAPERCLIP_GITHUB_BRIDGE_TOKEN")).toBe(withBridge);
+    for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY", "GITHUB_TOKEN", "PAPERCLIP_GITHUB_OTHER_TOKEN"]) {
+      expect(config.shell_environment_policy.include_only).not.toContain(key);
+    }
     expect(config.shell_environment_policy.include_only).not.toContain("MY_SERVICE_TOKEN");
     expect(JSON.stringify(config)).not.toContain("assigned-run-token");
     expect(JSON.stringify(config)).not.toContain("assigned-tool-token");
+    expect(JSON.stringify(config)).not.toMatch(/scoped-github-capability|scoped-github-bridge|provider-key-canary|github-pat-canary/);
   });
 
   it("forwards arbitrary Codex model IDs verbatim without picker-dependent session config", async () => {

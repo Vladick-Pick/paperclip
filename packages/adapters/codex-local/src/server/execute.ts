@@ -1237,9 +1237,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const identityNames = ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"];
         const shellKeys = [...new Set([
           "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
-          // Keep Codex's default secret-name exclusions except for the scoped
-          // Paperclip API token used by the agent skill. Never include host env.
-          ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+          // Admit only scoped Paperclip API/GitHub tokens; keep other secret-name exclusions.
+          ...Object.keys(env).filter(key => ["PAPERCLIP_API_KEY", "PAPERCLIP_GITHUB_BROKER_TOKEN", "PAPERCLIP_GITHUB_BRIDGE_TOKEN"].includes(key) || !/key|secret|token/i.test(key)),
           ...identityNames,
         ])];
         args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",

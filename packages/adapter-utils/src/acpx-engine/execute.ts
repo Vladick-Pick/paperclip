@@ -2058,9 +2058,8 @@ async function buildRuntime(input: {
       ...(input.ctx.agentIdentity ? { identityEnvironmentKeys: [...new Set([
         "PATH", "HOME", "LANG", "TMPDIR", "CODEX_HOME",
         "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
-        // Preserve Codex's default secret-name exclusions. The short-lived
-        // Paperclip API token is required by the agent skill's Bash/curl calls.
-        ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+        // Admit only scoped Paperclip API/GitHub tokens; keep other secret-name exclusions.
+        ...Object.keys(env).filter(key => ["PAPERCLIP_API_KEY", "PAPERCLIP_GITHUB_BROKER_TOKEN", "PAPERCLIP_GITHUB_BRIDGE_TOKEN"].includes(key) || !/key|secret|token/i.test(key)),
       ])] } : {}),
       requestedModel,
       requestedThinkingEffort,
