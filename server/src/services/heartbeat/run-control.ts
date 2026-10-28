@@ -1065,7 +1065,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               runtimeMode: run.runtimeMode,
               abortRequested: control.controller.signal.aborted,
             }, control);
-            const stopped = await getRun(run.id);
+            const stopped = await getRun(run.id, { includeExecutionEvidence: true });
             if (stopped && isHeartbeatRunTerminalStatus(stopped.status)) {
               if (
                 parseObject(stopped.resultJson?.executionCancellation).state !==

@@ -1,14 +1,17 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { runningProcesses } from "../adapters/index.js";
-import { randomUUID } from "node:crypto";
+import * as adapters from "../adapters/index.js";
+import { randomBytes, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeState,
   agentWakeupRequests,
   agents,
+  authUsers,
   activityLog,
   companies,
   companyMemberships,
@@ -18,6 +21,7 @@ import {
   heartbeatRuns,
   heartbeatRunEvents,
   issueComments,
+  issueExecutionDecisions,
   issueThreadInteractions,
   issueRecoveryActions,
   issues,
@@ -27,6 +31,8 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
+import { adapterExecutionControls } from "../services/adapter-execution-control.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
@@ -259,6 +265,75 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       forceFreshSession: true });
     await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
+  });
+
+  it.each(["UTF8", "SQL_ASCII", "UTF8 oversized"])("commits a reviewer's own handoff to human approval (%s)", async encoding => {
+    const seeded = await seedQueue();
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.insert(authUsers).values({ id: "queue-owner", name: "Queue owner", email: "queue-owner@example.test",
+      createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.update(companies).set({ defaultResponsibleUserId: "queue-owner" }).where(eq(companies.id, seeded.companyId));
+    await db.update(agents).set({ adapterType: "process", adapterConfig: { cwd: "/tmp" },
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    const reviewStageId = randomUUID();
+    const approvalStageId = randomUUID();
+    const policy = normalizeIssueExecutionPolicy({ stages: [
+      { id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: seeded.agentId }] },
+      { id: approvalStageId, type: "approval", participants: [{ type: "user", userId: "queue-owner" }] },
+    ] });
+    await db.update(issues).set({ status: "in_review", executionRunId: null, executionPolicy: policy, executionState: {
+      status: "pending", currentStageId: reviewStageId, currentStageType: "review", currentStageIndex: 0,
+      currentParticipant: { type: "agent", agentId: seeded.agentId }, completedStageIds: [],
+      lastDecisionId: null, lastDecisionOutcome: null, returnAssignee: null, reviewRequest: null, monitor: null,
+    } }).where(eq(issues.id, seeded.issueId));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+
+    // Exercise the real SQL_ASCII projection without changing the disposable cluster's encoding.
+    const executeSql = db.execute.bind(db);
+    const encodingSpy = vi.spyOn(db, "execute").mockImplementation(query => executeSql(
+      new PgDialect().sqlToQuery(typeof query === "string" ? sql.raw(query) : query.getSQL()).sql
+        .includes("current_setting('server_encoding')")
+        ? sql`select ${encoding === "SQL_ASCII" ? "SQL_ASCII" : "UTF8"}::text as server_encoding` : query,
+    ));
+    const execute = vi.fn(async (ctx: adapters.AdapterExecutionContext) => {
+      await ctx.onCancellationReady?.();
+      if (!ctx.signal!.aborted) {
+        await new Promise<void>(resolve => ctx.signal!.addEventListener("abort", () => resolve(), { once: true }));
+      }
+      return { exitCode: 1, signal: null, timedOut: false, errorMessage: "Cancelled", resultJson: {
+        ...(encoding === "UTF8 oversized" ? { providerOutput: randomBytes(80 * 1024).toString("hex") } : {}),
+        executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() },
+      } };
+    });
+    const adapterSpy = vi.spyOn(adapters, "getServerAdapter").mockReturnValue({
+      ...adapters.getServerAdapter("process"), execute, supportsLocalAgentJwt: false,
+    });
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.wakeup(seeded.agentId, { source: "assignment", triggerDetail: "system",
+        reason: "issue_assigned", payload: { issueId: seeded.issueId }, contextSnapshot: { issueId: seeded.issueId },
+        requestedByActorType: "user", requestedByActorId: "queue-owner",
+      });
+      seeded.runId = run!.id;
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce(), { timeout: 10_000 });
+      const response = await request(app(seeded.companyId, "queue-owner", seeded))
+        .patch(`/api/issues/${seeded.issueId}`).send({ status: "done", comment: "Approved: checked the implementation." });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      expect(issue).toMatchObject({ status: "in_review", assigneeAgentId: null, assigneeUserId: "queue-owner",
+        executionState: { currentStageId: approvalStageId, currentStageType: "approval", completedStageIds: [reviewStageId] } });
+      expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, seeded.issueId)))
+        .toMatchObject([{ stageId: reviewStageId, outcome: "approved", createdByRunId: seeded.runId }]);
+      const presentedRun = await heartbeat.getRun(seeded.runId);
+      if (encoding === "SQL_ASCII") expect(presentedRun?.resultJson).toBeNull();
+      if (encoding === "UTF8 oversized") expect(presentedRun?.resultJson).toMatchObject({ truncated: true });
+    } finally {
+      adapterExecutionControls.get(seeded.runId)?.controller.abort();
+      await heartbeat.drainActiveRunExecutions();
+      adapterSpy.mockRestore();
+      encodingSpy.mockRestore();
+    }
   });
 
   it("allows only the exact task mutation that stopped its own run to commit", async () => {
