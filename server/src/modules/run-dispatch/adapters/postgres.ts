@@ -10,9 +10,10 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
+import { isUuidLike, ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
 import { withAccountingTransaction } from "../../../services/accounting-transaction.js";
 import type { ActivityPublication } from "../../../services/activity-log.js";
 import { parseObject } from "../../../adapters/utils.js";
@@ -535,6 +536,21 @@ export function createPostgresRunDispatchAdapter(
     );
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
+    const interactionId = readNonEmptyString(context.interactionId)?.trim();
+    const isPendingInteractionAddressee =
+      issue && wakeReason === "interaction_pending" && interactionId && isUuidLike(interactionId)
+        ? await dbOrTx.select({ id: issueThreadInteractions.id })
+            .from(issueThreadInteractions)
+            .where(and(
+              eq(issueThreadInteractions.id, interactionId),
+              eq(issueThreadInteractions.companyId, input.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.status, "pending"),
+              eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+            ))
+            .limit(1)
+            .then((rows) => Boolean(rows[0]))
+        : false;
     const retryReason =
       readNonEmptyString(context.retryReason) ?? input.scheduledRetryReason ?? null;
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
@@ -609,6 +625,7 @@ export function createPostgresRunDispatchAdapter(
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
+      isPendingInteractionAddressee,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,

@@ -148,6 +148,8 @@ export type QueuedRunFacts = {
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
   isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
+  /** Verified against the pending card's company, issue and agent addressee. */
+  isPendingInteractionAddressee?: boolean;
   isAuthorizedSourceScopedRecovery: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
 
@@ -172,6 +174,7 @@ type OwnershipFacts = {
   issueAssigneeAgentId: string | null;
   isNonAssigneeWorkspaceBusyRetry: boolean;
   isInteractionWake?: boolean;
+  isPendingInteractionAddressee?: boolean;
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
 };
@@ -187,6 +190,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.issueAssigneeAgentId === facts.runAgentId) return "current_owner";
   if (facts.isNonAssigneeWorkspaceBusyRetry) return "current_owner";
   if (facts.isInteractionWake) return "current_owner";
+  if (facts.isPendingInteractionAddressee) return "current_owner";
   if (facts.isCurrentReviewParticipant) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
   return "reassigned";
@@ -234,7 +238,7 @@ function decideExecutionLock(facts: ExecutionLockFacts): ExecutionLockOutcome {
 
 type ReviewParticipantCheckFacts = ReviewParticipantFacts & {
   runAgentId: string;
-  /** True when a comment wake excuses a participant mismatch (staleness only). */
+  /** True when a discussion wake excuses a participant mismatch (staleness only). */
   bypass?: boolean;
 };
 
@@ -574,6 +578,7 @@ export function decideQueuedRunStaleness(
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
     isInteractionWake: facts.isInteractionWake,
+    isPendingInteractionAddressee: facts.isPendingInteractionAddressee,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
       facts.reviewParticipant.participantIsAgent &&
@@ -669,7 +674,7 @@ export function decideQueuedRunStaleness(
   const participantOutcome = decideReviewParticipant({
     ...facts.reviewParticipant,
     runAgentId: facts.runAgentId,
-    bypass: facts.wakeCommentIdPresent,
+    bypass: facts.wakeCommentIdPresent || facts.isPendingInteractionAddressee,
   });
   if (participantOutcome === "participant_changed") {
     return {

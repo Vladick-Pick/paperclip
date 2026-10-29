@@ -14,6 +14,7 @@ import {
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
 } from "@paperclipai/db";
@@ -635,6 +636,63 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   });
 
   describe("cancelStaleQueuedRun", () => {
+    it.each<{
+      label: string;
+      expected: "not_stale" | "cancelled";
+      status?: string;
+      addresseeMatches?: boolean;
+      issueMatches?: boolean;
+      companyMatches?: boolean;
+      contextId?: string | null;
+      wakeReason?: string;
+    }>([
+      { label: "pending addressee", expected: "not_stale" },
+      { label: "answered card", status: "answered", expected: "cancelled" },
+      { label: "expired card", status: "expired", expected: "cancelled" },
+      { label: "another addressee", addresseeMatches: false, expected: "cancelled" },
+      { label: "another issue", issueMatches: false, expected: "cancelled" },
+      { label: "another company", companyMatches: false, expected: "cancelled" },
+      { label: "missing card ID", contextId: null, expected: "cancelled" },
+      { label: "malformed card ID", contextId: "not-a-uuid", expected: "cancelled" },
+      { label: "unknown card ID", contextId: randomUUID(), expected: "cancelled" },
+      { label: "padded unknown card ID", contextId: ` ${randomUUID()} `, expected: "cancelled" },
+      { label: "another wake reason", wakeReason: "issue_assigned", expected: "cancelled" },
+    ])("checks the persisted interaction addressee: $label", async ({
+      status = "pending", addresseeMatches = true, issueMatches = true,
+      companyMatches = true, contextId, wakeReason = "interaction_pending", expected,
+    }) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const ownerId = randomUUID(), issueId = randomUUID(), interactionId = randomUUID();
+      await seedAgent({ id: ownerId, companyId, name: "Task owner" });
+      await seedIssue({ companyId, issueId, status: "blocked", assigneeAgentId: ownerId });
+      const ownerRunId = await seedRun({ companyId, agentId: ownerId, status: "running" });
+      const lockedAt = new Date();
+      await db.update(issues).set({ executionRunId: ownerRunId, checkoutRunId: ownerRunId, executionLockedAt: lockedAt })
+        .where(eq(issues.id, issueId));
+      const cardCompanyId = companyMatches ? companyId : (await seedCompanyAndAgent()).companyId;
+      const cardIssueId = issueMatches ? issueId : randomUUID();
+      if (!issueMatches) await seedIssue({ companyId, issueId: cardIssueId, status: "blocked", assigneeAgentId: ownerId });
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId, companyId: cardCompanyId, issueId: cardIssueId,
+        kind: "ask_user_questions", status,
+        addresseeAgentId: addresseeMatches ? agentId : ownerId,
+        payload: { questions: [] },
+      });
+      const runId = await seedRun({ companyId, agentId, contextSnapshot: {
+        issueId, interactionId: contextId === undefined ? interactionId : contextId,
+        wakeReason, source: "issue.interaction.created",
+      } });
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        companyId, runId, expectedStatus: "queued", now: new Date(),
+      });
+      expect(outcome).toMatchObject({ outcome: expected,
+        ...(expected === "cancelled" ? { errorCode: "issue_assignee_changed" } : {}),
+      });
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(persisted).toMatchObject({ status: "blocked", assigneeAgentId: ownerId,
+        executionRunId: ownerRunId, checkoutRunId: ownerRunId, executionLockedAt: lockedAt });
+    });
+
     it.each([
       { label: "chat source", source: "chat:slack", expected: "chat:slack" },
       {

@@ -267,6 +267,40 @@ describe("decideScheduledRetryGate", () => {
 });
 
 describe("decideQueuedRunStaleness", () => {
+  it("allows a verified pending interaction addressee on another agent's blocked task", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      issueStatus: "blocked",
+      issueAssigneeAgentId: "agent-2",
+      issueExecutionRunId: "owner-run",
+      issueCheckoutRunId: "owner-run",
+      wakeReason: "interaction_pending",
+      isPendingInteractionAddressee: true,
+    }, NOW)).toEqual({ stale: false });
+  });
+
+  it("allows a pending question addressee to discuss another participant's review", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      issueStatus: "in_review",
+      issueAssigneeAgentId: "agent-2",
+      wakeReason: "interaction_pending",
+      isPendingInteractionAddressee: true,
+      reviewParticipant: {
+        isInReview: true, hasParticipant: true, participantIsAgent: true,
+        participantAgentId: "agent-2", currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-2" },
+      },
+    }, NOW)).toEqual({ stale: false });
+  });
+
+  it.each(["done", "cancelled"])("does not reopen a %s issue for a pending question", (issueStatus) => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(), issueStatus, issueAssigneeAgentId: "agent-2",
+      wakeReason: "interaction_pending", isPendingInteractionAddressee: true,
+    }, NOW)).toMatchObject({ stale: true, errorCode: "issue_terminal_status" });
+  });
+
   it("is not stale when every rule passes", () => {
     expect(decideQueuedRunStaleness(baseStalenessFacts(), NOW)).toEqual({
       stale: false,
