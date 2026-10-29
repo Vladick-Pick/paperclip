@@ -1597,6 +1597,7 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   title?: string | null;
   summary?: string | null;
   status: IssueThreadInteractionStatus;
+  /** none saves ordinary answers without a wake; verified native input retains its protocol delivery. */
   continuationPolicy: IssueThreadInteractionContinuationPolicy;
   /** Read-time acceptance gate; omitted when no workspace preparation is pending. */
   acceptanceBlocker?: "workspace_sync_pending";

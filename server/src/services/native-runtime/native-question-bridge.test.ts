@@ -491,6 +491,70 @@ describeEmbeddedPostgres("native question bridge", () => {
     } finally { release(); }
   });
 
+  it("continues a native external-chat answer in an isolated run despite its protocol none policy", async () => {
+    await seed();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, source: "chat:slack" } })
+      .where(eq(heartbeatRuns.id, runId));
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event: runtimeRequestEvent() });
+    expect(interaction?.continuationPolicy).toBe("none");
+    await issueThreadInteractionService(db).answerQuestions(
+      { id: issueId, companyId, status: "in_progress" }, interaction!.id,
+      { answers: [{ questionId: "color", optionIds: ["green"] }] }, { userId: "operator-1" },
+    );
+    const targetRunId = randomUUID();
+    const wakeup = vi.fn(async () => db.insert(heartbeatRuns).values({
+      id: targetRunId, companyId, agentId, status: "queued", contextSnapshot: { issueId },
+    }).returning().then(rows => rows[0]!));
+    const cancelRun = vi.fn().mockResolvedValue({ id: runId, status: "cancelled" });
+    const resolveNativeQuestion = vi.fn(candidate => deliverNativeQuestionResponse(db, candidate));
+    const service = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup, cancelRun } as never,
+      resolveNativeQuestion,
+    });
+
+    expect(await service.deliver(interaction!.id)).toMatchObject({ status: "fallback_queued", targetRunId });
+    expect(cancelRun).toHaveBeenCalledWith(runId, expect.any(String), expect.objectContaining({
+      errorCode: "external_chat_continuation",
+    }));
+    expect(cancelRun.mock.invocationCallOrder[0]).toBeLessThan(wakeup.mock.invocationCallOrder[0]!);
+    expect(resolveNativeQuestion).not.toHaveBeenCalled();
+    expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ allowRunCoalescing: false }));
+    expect((await service.deliver(interaction!.id))?.duplicate).toBe(true);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["legacy", "unbound", "mismatched_request"])("does not bypass none for an unverified native identity: %s", async invalidIdentity => {
+    await seed();
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event: runtimeRequestEvent() });
+    await issueThreadInteractionService(db).answerQuestions(
+      { id: issueId, companyId, status: "in_progress" }, interaction!.id,
+      { answers: [{ questionId: "color", optionIds: ["green"] }] }, { userId: "operator-1" },
+    );
+    if (invalidIdentity === "unbound") {
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    }
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId, source: "chat:slack" },
+      ...(invalidIdentity === "legacy" ? { runtimeMode: "legacy" } : {}),
+      ...(invalidIdentity === "unbound" ? { nativeIssueId: null } : {}),
+    }).where(eq(heartbeatRuns.id, runId));
+    if (invalidIdentity === "mismatched_request") {
+      await db.update(issueThreadInteractions).set({
+        payload: { ...interaction!.payload, runtimeRequestId: "another-request" },
+      }).where(eq(issueThreadInteractions.id, interaction!.id));
+    }
+    const wakeup = vi.fn().mockResolvedValue({ id: runId });
+    const cancelRun = vi.fn();
+    const result = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup, cancelRun } as never,
+      resolveNativeQuestion: candidate => deliverNativeQuestionResponse(db, candidate),
+    }).deliver(interaction!.id);
+
+    expect(result).toMatchObject({ status: "delivered", mode: null, targetRunId: null });
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
   it.each(["succeeded", "failed", "cancelled", "timed_out"])("delivers a historical answer exactly once after a %s native run", async status => {
     await seed();
     await db.update(issues).set({ conversationAgentId: agentId, conversationUserId: "operator-1", conversationState: "active", conversationSessionGeneration: 1, executionRunId: null }).where(eq(issues.id, issueId));

@@ -66,6 +66,7 @@ resolution_reason?: ("accepted" | "rejected" | "stale_target" | "superseded_by_c
 resolved_by_kind: ("user" | "agent" | "system" | "other")
 created_by_kind?: ("agent" | "user" | "other")
 creator_agent_role?: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
+/** Ordinary none-policy answers are resolved without a continuation; native input retains its protocol delivery. */
 continuation_policy?: ("none" | "wake_assignee" | "wake_assignee_on_accept" | "other")
 target_type?: ("issue_document" | "custom" | "none" | "other")
 option_count?: number

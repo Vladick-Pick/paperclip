@@ -22,6 +22,7 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import type { heartbeatService } from "./heartbeat.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { requestIdForInteraction } from "./native-runtime/native-question-identity.js";
 
 const DELIVERY_CLAIM_STALE_MS = 30_000;
 const DELIVERY_CLAIM_REFRESH_MS = 10_000;
@@ -566,7 +567,7 @@ export function questionResponseDeliveryService(
         .limit(1)
         .then((rows) => rows[0] ?? null));
     const result: DeliveryRow = persisted ?? input.delivery;
-    if (updated) {
+    if (updated && (input.mode || input.status === "failed")) {
       getTelemetryClient()?.trackDynamic("question_response.delivery", {
         adapter: input.adapter,
         outcome: input.mode ?? "failed",
@@ -1019,6 +1020,11 @@ export function questionResponseDeliveryService(
         errorCode: "question_response_payload_digest_mismatch",
       });
     }
+    // Native input uses none for protocol delivery, including isolated or historical continuation.
+    const nativeQuestion = sourceRun?.runtimeMode === "native" &&
+      sourceRun.nativeIssueId === interaction.issueId &&
+      requestIdForInteraction(hydratedInteraction) !== null;
+    const shouldContinue = interaction.continuationPolicy !== "none" || nativeQuestion;
 
     // A provider input request can keep its source process alive while it waits
     // for an answer in either runtime mode. External chat answers intentionally
@@ -1028,6 +1034,7 @@ export function questionResponseDeliveryService(
     // is enqueued. In particular, ACPX-backed local adapters may still persist
     // as `legacy` runs even though their interaction is provider-native.
     if (
+      shouldContinue &&
       externalChatBoundary &&
       sourceRun?.id === interaction.sourceRunId &&
       (sourceRun.status === "queued" || sourceRun.status === "running")
@@ -1137,6 +1144,17 @@ export function questionResponseDeliveryService(
           errorCode,
         });
       }
+    }
+
+    if (!shouldContinue) {
+      return recordTerminal({
+        delivery: claimed,
+        interaction,
+        status: "delivered",
+        mode: null,
+        targetRunId: null,
+        adapter,
+      });
     }
 
     // An answer to an older question is new input, not implicit permission to

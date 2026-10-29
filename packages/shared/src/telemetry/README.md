@@ -88,6 +88,14 @@ Use `trackInteractionCreated()` and `trackInteractionResolved()` from
 `events.ts` to emit these events. The generated contract remains the authority
 for their exact dimensions and optionality.
 
+An ordinary question card with continuation policy `none` still resolves when
+answered, but its intentional lack of a continuation is not a delivery failure
+or a transport outcome. Its answer and no-op delivery receipt stay in the
+instance database; no answer content or receipt identifiers enter telemetry.
+Native provider questions use `none` as protocol control and retain their
+existing input delivery, isolated external-chat continuation, and historical
+fallback behavior. No telemetry dimension or enum value is added for this case.
+
 ## Agent Task Run Events
 
 `agent.task_run` records one terminal state for one agent run: `succeeded`,

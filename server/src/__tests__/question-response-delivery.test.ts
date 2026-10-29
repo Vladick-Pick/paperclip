@@ -95,6 +95,8 @@ describeEmbeddedPostgres("question response delivery", () => {
       successorStatus?: "queued" | "running";
       sourceCommentBody?: string;
       attachSourceCommentToInteraction?: boolean;
+      continuationPolicy?: "none" | "wake_assignee" | "wake_assignee_on_accept";
+      createdByBoard?: boolean;
     } = {},
   ) {
     const companyId = randomUUID();
@@ -181,12 +183,12 @@ describeEmbeddedPostgres("question response delivery", () => {
       { id: issueId, companyId },
       {
         kind: "ask_user_questions",
-        continuationPolicy: "wake_assignee",
+        continuationPolicy: args.continuationPolicy ?? "wake_assignee",
         sourceCommentId:
           args.attachSourceCommentToInteraction === false
             ? null
             : sourceCommentId,
-        sourceRunId,
+        sourceRunId: args.createdByBoard ? null : sourceRunId,
         payload: {
           version: 1,
           title: "Server choices",
@@ -259,7 +261,9 @@ describeEmbeddedPostgres("question response delivery", () => {
           },
         },
       },
-      { agentId, runId: sourceRunId },
+      args.createdByBoard
+        ? { userId: "board-user" }
+        : { agentId, runId: sourceRunId },
     );
     const answered = await interactionSvc.answerQuestions(
       { id: issueId, companyId, status: "in_progress" },
@@ -288,8 +292,64 @@ describeEmbeddedPostgres("question response delivery", () => {
     };
   }
 
-  it("queues an answer to a running successor instead of automatically steering", async () => {
-    const seeded = await seed({ successorStatus: "running" });
+  it.each([true, false])(
+    "saves an answer without waking the assignee when policy is none (board-created: %s)",
+    async (createdByBoard) => {
+      const seeded = await seed({ continuationPolicy: "none", createdByBoard });
+      const wakeup = vi.fn().mockResolvedValue({ id: seeded.sourceRunId });
+      const resolveNativeQuestion = vi.fn().mockResolvedValue("not_native" as const);
+      const service = questionResponseDeliveryService(db, {
+        heartbeat: { wakeup } as never,
+        resolveNativeQuestion,
+      });
+
+      const first = await service.deliver(seeded.interaction.id);
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(first).toMatchObject({
+        status: "delivered", mode: null, targetRunId: null, duplicate: false,
+      });
+      const [saved] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, seeded.interaction.id));
+      expect(saved).toMatchObject({ status: "answered", result: seeded.interaction.result });
+      const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+      expect(delivery).toMatchObject({
+        status: "delivered", deliveryMode: null, targetRunId: null, lastErrorCode: null,
+      });
+      expect(delivery?.acknowledgedAt).toBeInstanceOf(Date);
+      await expect(service.deliver(seeded.interaction.id)).resolves.toMatchObject({
+        status: "delivered", duplicate: true,
+      });
+      await expect(service.hasPending()).resolves.toBe(false);
+      await expect(service.sweepPending()).resolves.toMatchObject({ scanned: 0 });
+      expect(wakeup).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["native", "legacy"] as const)(
+    "does not cancel an external-chat source or wake a continuation when policy is none in %s mode",
+    async (runtimeMode) => {
+      const seeded = await seed({ continuationPolicy: "none", runtimeMode, sourceStatus: "running" });
+      await db.update(heartbeatRuns)
+        .set({ contextSnapshot: { issueId: seeded.issueId, source: "chat:slack" } })
+        .where(eq(heartbeatRuns.id, seeded.sourceRunId));
+      const wakeup = vi.fn().mockResolvedValue({ id: seeded.sourceRunId });
+      const cancelRun = vi.fn();
+      const resolveNativeQuestion = vi.fn().mockResolvedValue("queued" as const);
+
+      const outcome = await questionResponseDeliveryService(db, {
+        heartbeat: { wakeup, cancelRun } as never,
+        resolveNativeQuestion,
+      }).deliver(seeded.interaction.id);
+
+      expect(cancelRun).not.toHaveBeenCalled();
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(resolveNativeQuestion).not.toHaveBeenCalled();
+      expect(outcome).toMatchObject({ status: "delivered", mode: null, targetRunId: null });
+    },
+  );
+
+  it.each(["wake_assignee", "wake_assignee_on_accept"] as const)("queues an answer to a running successor instead of automatically steering with %s", async (continuationPolicy) => {
+    const seeded = await seed({ successorStatus: "running", continuationPolicy });
     const steer = vi.fn().mockResolvedValue({ turnId: "unexpected" });
     const wakeup = vi.fn().mockImplementation(async () => {
       await db.insert(agentWakeupRequests).values({ companyId: seeded.companyId, agentId: seeded.agentId,
@@ -517,11 +577,12 @@ describeEmbeddedPostgres("question response delivery", () => {
     expect(wakeOptions?.contextSnapshot).not.toHaveProperty("wakeCommentIds");
   });
 
-  it("resolves an in-flight native input request before creating a continuation", async () => {
+  it.each(["none", "wake_assignee"] as const)("resolves an in-flight native input request before creating a continuation with %s", async (continuationPolicy) => {
     const seeded = await seed({
       adapterType: "paperclip_runner",
       runtimeMode: "native",
       sourceStatus: "running",
+      continuationPolicy,
     });
     const wakeup = vi.fn();
     const resolveNativeQuestion = vi.fn().mockResolvedValue("queued" as const);
@@ -545,11 +606,12 @@ describeEmbeddedPostgres("question response delivery", () => {
     expect(wakeup).not.toHaveBeenCalled();
   });
 
-  it("keeps native input delivery pending while its PRP session is unavailable", async () => {
+  it.each(["none", "wake_assignee"] as const)("keeps native input delivery pending while its PRP session is unavailable with %s", async (continuationPolicy) => {
     const seeded = await seed({
       adapterType: "paperclip_runner",
       runtimeMode: "native",
       sourceStatus: "running",
+      continuationPolicy,
     });
     const wakeup = vi.fn();
 

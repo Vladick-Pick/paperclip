@@ -22,9 +22,12 @@ import { questionResponseDeliveryService } from "../question-response-delivery.j
 import type { NativeRunStoreBinding } from "./native-run-coordinator-store.js";
 
 import { parseQuestionInteractionAnswers, parseSavedQuestionInteractionAnswers } from "../question-interaction-answers.js";
-
-const QUESTION_KEY_PREFIX = "paperclip-runner-question:";
-const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+import {
+  QUESTION_KEY_PREFIX,
+  REQUEST_ID_PATTERN,
+  requestIdForInteraction,
+  type NativeQuestionIdentity,
+} from "./native-question-identity.js";
 export const NATIVE_QUESTION_CANCELLATION_CONTEXT_KEY = "nativeQuestionCancellation";
 
 type QueueCommand = (
@@ -39,12 +42,6 @@ interface NativeQuestionCommandTarget {
 }
 
 const activeTargets = new Map<string, NativeQuestionCommandTarget>();
-
-interface NativeQuestionIdentity {
-  idempotencyKey?: string | null;
-  sourceRunId?: string | null;
-  payload: unknown;
-}
 
 export interface NativeQuestionAuthorizationIdentity extends NativeQuestionIdentity {
   companyId: string;
@@ -63,21 +60,6 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-}
-
-function requestIdForInteraction(
-  interaction: NativeQuestionIdentity,
-): string | null {
-  const payload = record(interaction.payload);
-  if (!interaction.sourceRunId || !payload?.questionSet) return null;
-  const key = interaction.idempotencyKey;
-  const expectedPrefix = `${QUESTION_KEY_PREFIX}${interaction.sourceRunId}:`;
-  if (!key?.startsWith(expectedPrefix)) return null;
-  const requestId = key.slice(expectedPrefix.length);
-  if (!REQUEST_ID_PATTERN.test(requestId)) return null;
-  return typeof payload.runtimeRequestId === "string" && payload.runtimeRequestId !== requestId
-    ? null
-    : requestId;
 }
 
 function toInteractionPayload(questionSet: PaperclipQuestionSet, runtimeRequestId: string) {
