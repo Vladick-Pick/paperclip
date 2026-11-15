@@ -156,8 +156,10 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
       try {
         let result: Record<string, unknown>;
         switch (method) {
-          case "server/discover": result = { supportedVersions: ["2026-07-28"], capabilities: { tools: {}, ...(events ? { events: {} } : {}) } }; break;
-          case "tools/list": result = await listTools(); break;
+          // MCP 2026-07-28 list and discovery results carry cache hints; the tool
+          // catalog depends on the caller's grant, so it is private to them.
+          case "server/discover": result = { ttlMs: 0, cacheScope: "private", supportedVersions: ["2026-07-28"], capabilities: { tools: {}, ...(events ? { events: {} } : {}) } }; break;
+          case "tools/list": result = { ttlMs: 0, cacheScope: "private", ...await listTools() }; break;
           case "tools/call": result = await callTool(CallToolRequestSchema.parse(envelope.data)); break;
           case "events/list":
             if (!events) { fail(-32601, "Events are unavailable."); return; }
